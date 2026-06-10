@@ -484,8 +484,23 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 	}
 	deadline := time.Now().Add(timeout)
 
+	// Honor waitToSettleTimeoutMs (Maestro-compatible): time to let the
+	// scroll animation settle before re-querying. Querying a still-moving
+	// hierarchy (RN bottom sheets especially) returns stale frames and the
+	// loop scrolls straight past the target.
+	settle := 300 * time.Millisecond
+	if step.WaitToSettleTimeoutMs > 0 {
+		settle = time.Duration(step.WaitToSettleTimeoutMs) * time.Millisecond
+	}
+
 	for i := 0; i < maxScrolls && time.Now().Before(deadline); i++ {
-		info, err := d.findElement(step.Element, true, 1000)
+		// 2s in-loop find budget. On deep hierarchies (e.g. React Native)
+		// the WDA server-side query alone can take ~800ms and miss, and the
+		// page-source fallback — the strategy that actually matches RN
+		// testIDs — needs a few hundred ms more; a 1s budget killed it
+		// mid-parse on every iteration, so the loop scrolled straight past
+		// targets that were on screen.
+		info, err := d.findElement(step.Element, true, 2000)
 		if err == nil && info != nil {
 			return successResult("Element found after scrolling", info)
 		}
@@ -497,7 +512,16 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 			return result
 		}
 
-		time.Sleep(300 * time.Millisecond) // Wait for scroll animation
+		time.Sleep(settle) // Wait for scroll animation
+	}
+
+	// Final check with a fuller budget: the loop's 1s per-iteration find is
+	// deliberately tight to keep scrolling responsive, but on deep
+	// hierarchies a single find (WDA query + page-source parse) can exceed
+	// it even with the element on screen — don't fail without one unhurried
+	// look at the settled UI.
+	if info, err := d.findElement(step.Element, true, 3000); err == nil && info != nil {
+		return successResult("Element found after scrolling", info)
 	}
 
 	return errorResult(fmt.Errorf("element not found after scrolling"), fmt.Sprintf("Element not found: %s", selectorDesc(step.Element)))
@@ -821,6 +845,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	sessionSettings := map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0.5,
 		"defaultAlertAction":      d.alertAction,
 	}
 	if d.alertAction == "accept" {

@@ -41,6 +41,16 @@ func (c *Client) CreateSession(bundleID string, alertAction string) error {
 		"bundleId":                bundleID,
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		// WDA defaults animationCoolOffTimeout to 2s: every snapshot
+		// request (element query, page source) waits for the app to have
+		// no active animations plus a cool-off. Apps with continuously
+		// running animations (React Native/Reanimated especially) pay up
+		// to 2s on EVERY find, which dwarfs the actual query cost. 0.5s
+		// keeps most of that win while still letting in-flight transitions
+		// (modal open/close, row slide-out) settle before the next
+		// snapshot — at 0 the runner outruns the UI and reads
+		// mid-animation frames, which flips fast flows from slow to racy.
+		"animationCoolOffTimeout": 0.5,
 		"shouldUseTestManagerForVisibilityDetection": false,
 	}
 	if alertAction != "" {
@@ -88,6 +98,7 @@ func (c *Client) DisableQuiescence() error {
 	return c.UpdateSettings(map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0.5,
 	})
 }
 

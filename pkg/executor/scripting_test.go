@@ -2070,3 +2070,31 @@ func TestScriptEngine_ExpandStep_RunFlowStep_NilWhen(t *testing.T) {
 		t.Errorf("File = %q, want %q", step.File, "test.yaml")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// conditionTimeout — default budget and overrides
+// ---------------------------------------------------------------------------
+
+func TestConditionTimeout_DefaultIsBounded(t *testing.T) {
+	// A condition with no explicit timeout must get the bounded default,
+	// not 0 (0 = driver's OptionalFindTimeout, 7s on iOS — every false
+	// `when:` guard would pay it).
+	cond := flow.Condition{Visible: &flow.Selector{ID: "x"}}
+	if got := conditionTimeout(cond, cond.Visible); got != defaultConditionTimeoutMs {
+		t.Errorf("conditionTimeout() = %d, want %d", got, defaultConditionTimeoutMs)
+	}
+}
+
+func TestConditionTimeout_CondOverrideWins(t *testing.T) {
+	cond := flow.Condition{Visible: &flow.Selector{ID: "x", Timeout: 4000}, Timeout: 2500}
+	if got := conditionTimeout(cond, cond.Visible); got != 2500 {
+		t.Errorf("conditionTimeout() = %d, want cond.Timeout 2500", got)
+	}
+}
+
+func TestConditionTimeout_SelectorOverride(t *testing.T) {
+	cond := flow.Condition{Visible: &flow.Selector{ID: "x", Timeout: 4000}}
+	if got := conditionTimeout(cond, cond.Visible); got != 4000 {
+		t.Errorf("conditionTimeout() = %d, want sel.Timeout 4000", got)
+	}
+}

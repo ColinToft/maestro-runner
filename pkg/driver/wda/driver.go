@@ -38,6 +38,17 @@ type Driver struct {
 	// Selector validation dedup
 	warnedFields map[string]bool
 
+	// Adaptive find-strategy ordering. WDA server-side queries (class
+	// chain / predicate string) are fast on native hierarchies but slow
+	// and erratic on deep React Native trees: they routinely miss
+	// elements the page source clearly contains, charging their full
+	// latency (hundreds of ms, sometimes a whole find budget) before
+	// every page-source rescue. Each time the WDA strategies miss and the
+	// page source then finds the element we count a rescue; after
+	// wdaMissFlipThreshold rescues the session flips to page-source-first
+	// and pays the query tax no more.
+	wdaRescues int
+
 	// Crash-loop detection. When the app under test keeps dying immediately
 	// after launch (debug builds, signing mismatch, runtime crash on startup)
 	// we get a flood of "app not running" / "session lost" errors. Without
@@ -434,6 +445,25 @@ func (d *Driver) findElement(sel flow.Selector, optional bool, stepTimeoutMs int
 	return d.findElementWithContext(ctx, sel)
 }
 
+// wdaMissFlipThreshold is the number of WDA-strategy misses rescued by the
+// page source before the session flips to page-source-first ordering.
+const wdaMissFlipThreshold = 3
+
+// pageSourceFirst reports whether finds should consult the page source
+// before the WDA server-side query strategies (see Driver.wdaRescues).
+func (d *Driver) pageSourceFirst() bool {
+	return d.wdaRescues >= wdaMissFlipThreshold
+}
+
+// noteWDARescue records that the WDA strategies missed an element the page
+// source then found. Logs once at the moment the ordering flips.
+func (d *Driver) noteWDARescue() {
+	d.wdaRescues++
+	if d.wdaRescues == wdaMissFlipThreshold {
+		logger.Info("[wda] page source rescued %d WDA-query misses — switching to page-source-first element finding for this session", d.wdaRescues)
+	}
+}
+
 // findElementWithContext finds an element using context for deadline management.
 func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector) (*core.ElementInfo, error) {
 	// Handle relative selectors via page source
@@ -441,7 +471,7 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector) 
 		return d.findElementRelativeWithContext(ctx, sel)
 	}
 
-	// All other selectors - try WDA strategies with page source fallback
+	// All other selectors - WDA strategies + page source, adaptively ordered
 	var lastErr error
 
 	for {
@@ -452,18 +482,30 @@ func (d *Driver) findElementWithContext(ctx context.Context, sel flow.Selector) 
 			}
 			return nil, fmt.Errorf("element '%s' not found: %w", sel.Describe(), ctx.Err())
 		default:
-			// Try WDA strategies first (skip for index selectors — WDA returns single match)
+			psFirst := d.pageSourceFirst()
+
+			if psFirst {
+				if info, err := d.findElementByPageSourceOnce(sel); err == nil {
+					return info, nil
+				} else {
+					lastErr = err
+				}
+			}
+
+			// WDA strategies (skip for index selectors — WDA returns single match)
 			if !sel.HasNonZeroIndex() {
 				if info, err := d.findElementByWDA(sel); err == nil {
 					return info, nil
 				}
 			}
 
-			// Fallback to page source parsing
-			if info, err := d.findElementByPageSourceOnce(sel); err == nil {
-				return info, nil
-			} else {
-				lastErr = err
+			if !psFirst {
+				if info, err := d.findElementByPageSourceOnce(sel); err == nil {
+					d.noteWDARescue()
+					return info, nil
+				} else {
+					lastErr = err
+				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -493,8 +535,14 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 		return d.findElement(sel, optional, stepTimeoutMs)
 	}
 
-	// For text-based selectors, use smart fallback strategy
-	if sel.Text != "" {
+	// For text-ONLY selectors, use smart fallback strategy. Combined
+	// id+text selectors must NOT take this path: every WDA query in it
+	// matches text alone, so the id would be silently ignored — with
+	// duplicate labels on screen (e.g. same-named rows in a list) the tap
+	// lands on whichever match WDA returns first instead of the element
+	// the id pins down. The standard path ANDs id+text (compound class
+	// chain + page-source matchesSelector).
+	if sel.Text != "" && sel.ID == "" {
 		timeout := d.calculateTimeout(optional, stepTimeoutMs)
 		ctx, cancel := context.WithTimeout(d.parentContext(), timeout)
 		defer cancel()
@@ -520,6 +568,18 @@ func (d *Driver) findElementForTapWithContext(ctx context.Context, sel flow.Sele
 			}
 			return nil, fmt.Errorf("element '%s' not found: %w", sel.Describe(), ctx.Err())
 		default:
+			// Adaptive ordering (see findElementWithContext): once the
+			// session has flipped to page-source-first, consult it before
+			// the WDA query strategies — its clickable-parent lookup is the
+			// strategy that ends up matching on RN trees anyway.
+			if d.pageSourceFirst() {
+				if info, err := d.findElementByPageSourceOnce(sel); err == nil {
+					return info, nil
+				} else {
+					lastErr = err
+				}
+			}
+
 			// Step 1: Try interactive element types first (TextField, SecureTextField, Button)
 			if info, err := d.findInteractiveElementByWDA(sel, stateFilter); err == nil {
 				return info, nil
@@ -669,12 +729,55 @@ func (d *Driver) findElementOnce(sel flow.Selector) (*core.ElementInfo, error) {
 		return d.findElementByPageSourceOnce(sel)
 	}
 
-	// Single attempt with WDA
-	if info, err := d.findElementByWDA(sel); err == nil {
+	// Adaptive ordering (see findElementWithContext): on RN-like trees the
+	// page source is both faster and more truthful than the WDA queries.
+	// The WDA query stays as fallback either way — system alerts
+	// (springboard) are visible to it but absent from the app's /source.
+	if d.pageSourceFirst() {
+		if info, err := d.findElementByPageSourceOnce(sel); err == nil {
+			return info, nil
+		}
+		info, err := d.findElementByWDA(sel)
+		if err != nil {
+			return nil, err
+		}
+		if info.MatchNote != "" {
+			// Bounds-override match that the page source does not back up:
+			// almost certainly a stale frame for a dismissed-but-mounted
+			// view (see corroboration rationale below).
+			return nil, fmt.Errorf("element matched only via stale-bounds override and is absent from page source")
+		}
 		return info, nil
 	}
 
-	return d.findElementByPageSourceOnce(sel)
+	// Single attempt with WDA
+	if info, err := d.findElementByWDA(sel); err == nil {
+		if info.MatchNote == "" {
+			return info, nil
+		}
+		// The match was rescued by the bounds-override (XCUITest reported
+		// displayed=false but the frame looked in-viewport). XCUITest query
+		// snapshots can serve STALE frames for dismissed-but-still-mounted
+		// views — e.g. RN bottom sheets keep their tree mounted when
+		// toggled closed — so an override-rescued match may be a view the
+		// user can no longer see. That breaks negative assertions
+		// (assertNotVisible / waitUntil notVisible), which poll this
+		// function and then report a dismissed element as forever-visible.
+		// The page source is authoritative for those views (dismissed
+		// sheets drop out of /source entirely): corroborate before
+		// reporting the element visible.
+		if psInfo, psErr := d.findElementByPageSourceOnce(sel); psErr == nil {
+			return psInfo, nil
+		}
+		return nil, fmt.Errorf("element matched only via stale-bounds override and is absent from page source")
+	}
+
+	if info, err := d.findElementByPageSourceOnce(sel); err == nil {
+		d.noteWDARescue()
+		return info, nil
+	} else {
+		return nil, err
+	}
 }
 
 // findElementQuick finds an element without polling (single attempt).
@@ -756,6 +859,29 @@ func buildStateFilter(sel flow.Selector) string {
 // target StaticText/labels, not TextFields. Tap actions use findElementForTap instead.
 func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) {
 	stateFilter := buildStateFilter(sel)
+
+	// Combined id + text: BOTH must match the same element (AND semantics,
+	// matching upstream Maestro and this driver's own page-source path in
+	// matchesSelector). Falling back to single-field queries here would
+	// silently change which element matches: an id-only query returns the
+	// first id match regardless of text (wrong row in lists), and a
+	// text-only fallback matches elements the id was meant to exclude
+	// (breaking negative assertions like assertNotVisible id+text).
+	if sel.ID != "" && sel.Text != "" {
+		idOp := "CONTAINS"
+		if looksLikeRegex(sel.ID) {
+			idOp = "MATCHES"
+		}
+		query := fmt.Sprintf("**/XCUIElementTypeAny[`name %s '%s' AND (label CONTAINS[c] '%s' OR value CONTAINS[c] '%s')%s`]",
+			idOp, sel.ID, sel.Text, sel.Text, stateFilter)
+		elemID, err := d.client.FindElement("class chain", query)
+		if err == nil && elemID != "" {
+			return d.getElementInfo(elemID)
+		}
+		// No single-field fallback: the page-source path (which ANDs
+		// correctly and handles regex text) is the caller's next step.
+		return nil, fmt.Errorf("element not found via WDA")
+	}
 
 	// Try class chain for accessibility ID
 	if sel.ID != "" {

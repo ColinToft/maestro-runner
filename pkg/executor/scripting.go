@@ -474,8 +474,22 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 	return true
 }
 
+// defaultConditionTimeoutMs is the default budget for evaluating a
+// `when:`/`while:` condition when no explicit timeout is given.
+//
+// A condition is a point-in-time question ("is X on screen right now?"),
+// not an assertion that something will appear — Maestro evaluates these
+// against the current hierarchy without waiting. Falling through to the
+// drivers' OptionalFindTimeout (7s on iOS/WDA) made every false guard in
+// a guard-dense suite cost 7s: a `repeat` retry loop with a `when visible`
+// guard pays the full timeout on every iteration after the action
+// succeeds. One second is enough for a hierarchy round-trip while keeping
+// false guards cheap; explicit `timeout:` on the condition or selector
+// still overrides.
+const defaultConditionTimeoutMs = 1000
+
 // conditionTimeout returns the timeout to use for a condition check.
-// Priority: 1) Condition.Timeout, 2) Selector.Timeout, 3) 0 (driver uses OptionalFindTimeout)
+// Priority: 1) Condition.Timeout, 2) Selector.Timeout, 3) defaultConditionTimeoutMs
 func conditionTimeout(cond flow.Condition, sel *flow.Selector) int {
 	if cond.Timeout > 0 {
 		return cond.Timeout
@@ -483,7 +497,7 @@ func conditionTimeout(cond flow.Condition, sel *flow.Selector) int {
 	if sel != nil && sel.Timeout > 0 {
 		return sel.Timeout
 	}
-	return 0 // Optional=true on the step means driver uses OptionalFindTimeout (7s)
+	return defaultConditionTimeoutMs
 }
 
 // withEnvVars applies environment variables and returns a restore function.

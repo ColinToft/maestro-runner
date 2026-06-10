@@ -3,6 +3,7 @@ package wda
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -5933,5 +5934,92 @@ func TestSelectorLog(t *testing.T) {
 				t.Errorf("selectorLog(%+v) = %q, want %q", c.sel, got, c.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Combined id+text selectors must AND in the WDA fast path
+// ---------------------------------------------------------------------------
+
+// TestFindElementByWDACombinedIDTextQuery verifies that a selector with BOTH
+// id and text issues a single compound query requiring both to match the
+// same element (upstream-Maestro semantics, and consistent with this
+// driver's own page-source matchesSelector path).
+func TestFindElementByWDACombinedIDTextQuery(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/element") && r.Method == "POST" {
+			body, _ := io.ReadAll(r.Body)
+			queries = append(queries, string(body))
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"ELEMENT": "elem1"},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/displayed") {
+			jsonResponse(w, map[string]interface{}{"value": true})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/rect") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"x": 10, "y": 20, "width": 100, "height": 50},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	sel := flow.Selector{ID: "event-row-.*", Text: "My Event"}
+	info, err := driver.findElementByWDA(sel)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if info == nil {
+		t.Fatal("Expected element info")
+	}
+	if len(queries) == 0 {
+		t.Fatal("Expected a find query to be issued")
+	}
+	q := queries[0]
+	if !strings.Contains(q, "event-row-.*") || !strings.Contains(q, "My Event") {
+		t.Errorf("Compound query must constrain BOTH id and text, got: %s", q)
+	}
+	if !strings.Contains(q, " AND ") {
+		t.Errorf("Compound query must AND id and text, got: %s", q)
+	}
+}
+
+// TestFindElementByWDACombinedIDTextNoFallback verifies that when the
+// compound id+text query finds nothing, findElementByWDA does NOT fall back
+// to single-field queries: an id-only query matches the first id match
+// regardless of text (wrong row in lists), and a text-only query matches
+// elements the id was meant to exclude (breaking assertNotVisible id+text).
+func TestFindElementByWDACombinedIDTextNoFallback(t *testing.T) {
+	var queryCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/element") && r.Method == "POST" {
+			queryCount++
+			// No element matches the compound query
+			w.WriteHeader(http.StatusNotFound)
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"error": "no such element"},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	sel := flow.Selector{ID: "event-row-.*friday.*", Text: "My Event"}
+	if _, err := driver.findElementByWDA(sel); err == nil {
+		t.Fatal("Expected not-found error")
+	}
+	if queryCount != 1 {
+		t.Errorf("Expected exactly 1 (compound) query, got %d — single-field fallbacks change match semantics", queryCount)
 	}
 }

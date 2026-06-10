@@ -11,6 +11,7 @@ import (
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
+	"time"
 )
 
 // =============================================================================
@@ -4922,5 +4923,82 @@ func TestSetLocationSimulatorSimctlError(t *testing.T) {
 	}
 	if !strings.Contains(result.Message, "Failed to set simulator location") {
 		t.Errorf("expected failure message, got: %s", result.Message)
+	}
+}
+
+// TestScrollUntilVisibleHonorsSettleTimeout verifies waitToSettleTimeoutMs
+// from the YAML is used as the post-scroll settle delay (previously a
+// hardcoded 300ms — querying a still-animating hierarchy returns stale
+// frames and the loop scrolls past the target).
+func TestScrollUntilVisibleHonorsSettleTimeout(t *testing.T) {
+	var scrollTimes []time.Time
+	var findTimes []time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/source") {
+			findTimes = append(findTimes, time.Now())
+			// Never found — let the loop run its scroll+settle cycle
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844"/>
+</AppiumAUT>`,
+			})
+			return
+		}
+		if strings.Contains(path, "/element") && r.Method == "POST" {
+			w.WriteHeader(http.StatusNotFound)
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"error": "no such element"},
+			})
+			return
+		}
+		if strings.Contains(path, "/window/size") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+			return
+		}
+		if strings.Contains(path, "/dragfromtoforduration") {
+			scrollTimes = append(scrollTimes, time.Now())
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	step := &flow.ScrollUntilVisibleStep{
+		Element:               flow.Selector{ID: "missing"},
+		Direction:             "DOWN",
+		MaxScrolls:            2,
+		WaitToSettleTimeoutMs: 700,
+	}
+	step.TimeoutMs = 5000
+	result := driver.scrollUntilVisible(step)
+	if result.Success {
+		t.Fatal("Expected failure for missing element")
+	}
+	if len(scrollTimes) < 1 {
+		t.Fatal("Expected at least one scroll")
+	}
+	// The find following a scroll must come >= ~700ms after it (settle).
+	var checked bool
+	for _, st := range scrollTimes {
+		for _, ft := range findTimes {
+			if ft.After(st) {
+				gap := ft.Sub(st)
+				if gap < 650*time.Millisecond {
+					t.Errorf("Find ran %v after scroll; want >= ~700ms settle", gap)
+				}
+				checked = true
+				break
+			}
+		}
+	}
+	if !checked {
+		t.Skip("no find observed after a scroll — loop exited on deadline")
 	}
 }
