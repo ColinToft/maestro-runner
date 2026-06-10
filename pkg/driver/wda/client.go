@@ -38,8 +38,12 @@ func NewClient(port uint16) *Client {
 // in the session capabilities, enabling WDA's auto alert handling for permission dialogs.
 func (c *Client) CreateSession(bundleID string, alertAction string) error {
 	alwaysMatch := map[string]interface{}{
-		"bundleId":                bundleID,
 		"shouldWaitForQuiescence": false,
+		// Keep the app alive when the session ends. Without this, WDA
+		// terminates any app it launched on session teardown, so a
+		// per-flow runner invocation always finds the app dead and the
+		// stopApp:false warm-attach path can never engage.
+		"shouldTerminateApp": false,
 		"waitForIdleTimeout":      0,
 		// WDA defaults animationCoolOffTimeout to 2s: every snapshot
 		// request (element query, page source) waits for the app to have
@@ -52,6 +56,12 @@ func (c *Client) CreateSession(bundleID string, alertAction string) error {
 		// mid-animation frames, which flips fast flows from slow to racy.
 		"animationCoolOffTimeout": 0.5,
 		"shouldUseTestManagerForVisibilityDetection": false,
+	}
+	// An empty bundleID creates a session WITHOUT launching any app —
+	// used by the stopApp:false warm-attach path, where the app under
+	// test is already running and a launch would cold-restart it.
+	if bundleID != "" {
+		alwaysMatch["bundleId"] = bundleID
 	}
 	if alertAction != "" {
 		alwaysMatch["defaultAlertAction"] = alertAction

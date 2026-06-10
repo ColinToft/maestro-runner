@@ -562,17 +562,53 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		areaX, areaY = 0, 0
 		areaW, areaH = float64(width), float64(height)
 
-		// If selector specified, swipe within that element's bounds
+		// If selector specified, swipe FROM the element (stock Maestro
+		// semantics): start at the element's center and travel a
+		// screen-relative distance in the given direction. Constraining
+		// the gesture to the element's own bounds breaks small elements —
+		// a swipe DOWN from a 36x5 bottom-sheet drag handle would move
+		// ~3px and never commit the dismiss.
 		if step.Selector != nil && !step.Selector.IsEmpty() {
 			info, err := d.findElement(*step.Selector, false, step.TimeoutMs)
 			if err != nil {
 				return errorResult(err, fmt.Sprintf("Element not found for swipe: %s", step.Selector.Describe()))
 			}
 			if info != nil && info.Bounds.Width > 0 {
-				areaX = float64(info.Bounds.X)
-				areaY = float64(info.Bounds.Y)
-				areaW = float64(info.Bounds.Width)
-				areaH = float64(info.Bounds.Height)
+				cx := float64(info.Bounds.X) + float64(info.Bounds.Width)/2
+				cy := float64(info.Bounds.Y) + float64(info.Bounds.Height)/2
+				travelX := float64(width) * 0.8
+				travelY := float64(height) * 0.7
+				clamp := func(v, lo, hi float64) float64 {
+					if v < lo {
+						return lo
+					}
+					if v > hi {
+						return hi
+					}
+					return v
+				}
+				fromX, fromY = cx, cy
+				toX, toY = cx, cy
+				switch strings.ToLower(step.Direction) {
+				case "up":
+					toY = clamp(cy-travelY, float64(height)*0.05, float64(height)*0.95)
+				case "down":
+					toY = clamp(cy+travelY, float64(height)*0.05, float64(height)*0.95)
+				case "left":
+					toX = clamp(cx-travelX, float64(width)*0.05, float64(width)*0.95)
+				case "right":
+					toX = clamp(cx+travelX, float64(width)*0.05, float64(width)*0.95)
+				default:
+					return errorResult(fmt.Errorf("invalid direction: %s", step.Direction), "Invalid swipe direction")
+				}
+				duration := 0.1
+				if step.Duration > 0 {
+					duration = float64(step.Duration) / 1000.0
+				}
+				if err := d.client.Swipe(fromX, fromY, toX, toY, duration); err != nil {
+					return errorResult(err, "Swipe failed")
+				}
+				return successResult("Swipe completed", nil)
 			}
 		}
 
@@ -628,6 +664,32 @@ func (d *Driver) back(step *flow.BackStep) *core.CommandResult {
 	return errorResult(fmt.Errorf("back not supported on iOS"), "iOS doesn't have a back button")
 }
 
+// settleBeforeKeys waits briefly for the screen to stop animating before
+// sending synthesized keys. typeText delivered while the keyboard/input
+// session is still wiring up (keyboard slide-in, modal presentation) gets
+// the characters in but loses key EVENTS — most damagingly the return key:
+// the text lands yet onSubmitEditing never fires, so "type then Enter"
+// silently fails to submit. A two-screenshot stability check (the same
+// primitive as waitForAnimationToEnd) costs ~300-500ms on a settled
+// screen and caps at 1.5s mid-animation.
+func (d *Driver) settleBeforeKeys() {
+	const threshold = 0.005
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		prev, err := d.client.Screenshot()
+		if err != nil {
+			return
+		}
+		curr, err := d.client.Screenshot()
+		if err != nil {
+			return
+		}
+		if core.ImageDifference(prev, curr) <= threshold {
+			return
+		}
+	}
+}
+
 func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 	switch strings.ToLower(step.Key) {
 	case "home":
@@ -645,6 +707,7 @@ func (d *Driver) pressKey(step *flow.PressKeyStep) *core.CommandResult {
 	default:
 		// Try keyboard key
 		if keyChar := iosKeyboardKey(step.Key); keyChar != "" {
+			d.settleBeforeKeys()
 			if err := d.client.SendKeys(keyChar, 0); err != nil {
 				return errorResult(err, fmt.Sprintf("Press %s failed", step.Key))
 			}
@@ -679,6 +742,30 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	bundleID := step.AppID
 	if bundleID == "" {
 		return errorResult(fmt.Errorf("bundleID required"), "Bundle ID is required for launchApp")
+	}
+
+	// stopApp:false warm attach (upstream-Maestro semantics): do NOT
+	// restart an already-running app. XCUITest "launch" always
+	// cold-restarts, so without this branch every per-flow runner
+	// invocation relaunches the app from scratch — for a React Native
+	// dev build that means a full Metro bundle reload plus first-launch
+	// dialogs on EVERY flow (~40s/flow observed). When the app is
+	// already running we create a session without launching anything,
+	// foreground the app, and skip the permission reset entirely
+	// (permission changes only take effect on the next launch anyway).
+	if step.StopApp != nil && !*step.StopApp && !step.ClearState &&
+		len(step.Arguments) == 0 && len(step.Environment) == 0 &&
+		d.info.IsSimulator && d.appIsRunning(bundleID) {
+		if !d.client.HasSession() {
+			if err := d.client.CreateSession("", d.alertAction); err != nil {
+				return errorResult(err, "Failed to create attach session")
+			}
+		}
+		d.applySessionSettings()
+		if err := d.client.ActivateApp(bundleID); err != nil {
+			return errorResult(err, fmt.Sprintf("Failed to activate running app: %s", bundleID))
+		}
+		return successResult(fmt.Sprintf("Activated running app (stopApp: false): %s", bundleID), nil)
 	}
 
 	// Clear state and apply permissions
@@ -842,18 +929,7 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 
 	// Always update settings — ensures alert config is correct even when
 	// reusing a session from a previous flow with different permissions.
-	sessionSettings := map[string]interface{}{
-		"shouldWaitForQuiescence": false,
-		"waitForIdleTimeout":      0,
-		"animationCoolOffTimeout": 0.5,
-		"defaultAlertAction":      d.alertAction,
-	}
-	if d.alertAction == "accept" {
-		sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label BEGINSWITH[c] 'Allow' OR label ==[c] 'OK'`]"
-	} else if d.alertAction == "dismiss" {
-		sessionSettings["dismissAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Don't Allow' OR label CONTAINS[c] 'Dont Allow'`]"
-	}
-	_ = d.client.UpdateSettings(sessionSettings)
+	d.applySessionSettings()
 
 	// If we just created a session and no args needed, we're done
 	// (CreateSession already launched the app)
@@ -873,6 +949,38 @@ func (d *Driver) launchApp(step *flow.LaunchAppStep) *core.CommandResult {
 	}
 
 	return successResult(fmt.Sprintf("Launched app: %s", bundleID), nil)
+}
+
+// applySessionSettings pushes the standard WDA session settings (quiescence,
+// animation cool-off, alert handling) to the current session.
+func (d *Driver) applySessionSettings() {
+	sessionSettings := map[string]interface{}{
+		"shouldWaitForQuiescence": false,
+		"waitForIdleTimeout":      0,
+		"animationCoolOffTimeout": 0.5,
+		"defaultAlertAction":      d.alertAction,
+	}
+	if d.alertAction == "accept" {
+		sessionSettings["acceptAlertButtonSelector"] = "**/XCUIElementTypeButton[`label BEGINSWITH[c] 'Allow' OR label ==[c] 'OK'`]"
+	} else if d.alertAction == "dismiss" {
+		sessionSettings["dismissAlertButtonSelector"] = "**/XCUIElementTypeButton[`label CONTAINS[c] 'Don't Allow' OR label CONTAINS[c] 'Dont Allow'`]"
+	}
+	_ = d.client.UpdateSettings(sessionSettings)
+}
+
+// appIsRunning reports whether the app has a running process on the
+// simulator. Uses launchctl (simctl spawn) so it works without a WDA
+// session — WDA's own /wda/apps/state endpoint is session-scoped, which
+// would be a chicken-and-egg problem for the warm-attach path.
+func (d *Driver) appIsRunning(bundleID string) bool {
+	if d.udid == "" {
+		return false
+	}
+	out, err := exec.Command("xcrun", "simctl", "spawn", d.udid, "launchctl", "list").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "UIKitApplication:"+bundleID)
 }
 
 func (d *Driver) stopApp(step *flow.StopAppStep) *core.CommandResult {

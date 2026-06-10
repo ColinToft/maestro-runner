@@ -3722,15 +3722,21 @@ func TestKillAppTerminateError(t *testing.T) {
 	}
 }
 
-// TestMatchesTextInvalidRegexFallback tests that invalid regex falls back to contains
+// TestMatchesTextInvalidRegexFallback tests that invalid regex falls back to
+// EXACT literal matching (upstream-Maestro semantics — never substring).
 func TestMatchesTextInvalidRegexFallback(t *testing.T) {
-	// Invalid regex pattern - unclosed bracket
-	result := matchesText("[invalid", "test [invalid value")
+	// Invalid regex pattern, exact literal match
+	result := matchesText("[invalid", "[invalid")
 	if !result {
-		t.Error("Expected true for invalid regex fallback to contains")
+		t.Error("Expected true for exact literal match of invalid regex pattern")
 	}
 
-	// Invalid regex that doesn't contain the text
+	// Invalid regex pattern as a SUBSTRING must NOT match (anchored semantics)
+	result = matchesText("[invalid", "test [invalid value")
+	if result {
+		t.Error("Expected false: substring matches retarget selectors (e.g. alert titles)")
+	}
+
 	result = matchesText("[invalid", "no match")
 	if result {
 		t.Error("Expected false when invalid regex doesn't match")

@@ -195,6 +195,10 @@ type SwipeStep struct {
 	BaseStep              `yaml:",inline"`
 	Direction             string    `yaml:"direction"` // UP, DOWN, LEFT, RIGHT
 	Selector              *Selector `yaml:"selector"`
+	// From is upstream Maestro's name for the element-targeted swipe
+	// selector. Accepted as an alias so existing flows run unchanged
+	// (parser merges it into Selector).
+	From *Selector `yaml:"from"`
 	Start                 string    `yaml:"start"`    // "x%, y%"
 	End                   string    `yaml:"end"`      // "x%, y%"
 	StartX                int       `yaml:"startX"`   // Absolute X start

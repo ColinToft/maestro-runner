@@ -1139,9 +1139,17 @@ func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*core.ElementIn
 
 	selected := SelectByIndex(candidates, sel.Index)
 
-	// If element isn't a clickable type, try to find a clickable parent
-	// This handles patterns where text labels aren't interactive but their containers are
-	clickableElem := GetClickableElement(selected)
+	// If the matched element has no usable bounds of its own (some RN text
+	// nodes report 0x0), walk up to a clickable parent for tap coordinates.
+	// When the match HAS valid bounds, tap its own center: it matched the
+	// selector for a reason, and its center already lies inside any
+	// clickable ancestor. Unconditional promotion retargets taps — e.g. a
+	// 27x27 checkbox labeled "Complete X" promoted to its row Button taps
+	// the row center and opens the row's edit screen instead of toggling.
+	clickableElem := selected
+	if selected.Bounds.Width <= 0 || selected.Bounds.Height <= 0 {
+		clickableElem = GetClickableElement(selected)
+	}
 
 	info := &core.ElementInfo{
 		Text:    selected.Label,

@@ -271,34 +271,32 @@ func matchesID(pattern, id string) bool {
 }
 
 // matchesText checks if pattern matches any of the text fields.
+//
+// Upstream-Maestro semantics: the pattern must match the ENTIRE text — a
+// plain string is an exact (case-insensitive) match and a regex must
+// full-match. Substring matching silently retargets selectors: a
+// tapOn "Reset" must match the alert BUTTON labeled "Reset", never the
+// alert TITLE "Reset Events".
 func matchesText(pattern string, texts ...string) bool {
-	if looksLikeRegex(pattern) {
-		re, err := regexp.Compile("(?i)" + pattern)
-		if err != nil {
-			// Invalid regex - fall back to contains
-			for _, text := range texts {
-				if containsIgnoreCase(text, pattern) {
-					return true
-				}
-			}
-			return false
+	// Exact (case-insensitive) literal match first — this also covers
+	// patterns containing regex metacharacters used literally ("$42.99").
+	for _, text := range texts {
+		if text != "" && strings.EqualFold(strings.TrimSpace(text), strings.TrimSpace(pattern)) {
+			return true
 		}
-
-		for _, text := range texts {
-			if text != "" {
-				strippedText := strings.ReplaceAll(text, "\n", " ")
-				if re.MatchString(text) || re.MatchString(strippedText) || pattern == text {
-					return true
-				}
-			}
-		}
-		return false
 	}
 
-	// Literal text - case-insensitive contains
+	// Then anchored regex full-match.
+	re, err := regexp.Compile("(?i)^(?:" + pattern + ")$")
+	if err != nil {
+		return false
+	}
 	for _, text := range texts {
-		if containsIgnoreCase(text, pattern) {
-			return true
+		if text != "" {
+			strippedText := strings.ReplaceAll(text, "\n", " ")
+			if re.MatchString(text) || re.MatchString(strippedText) {
+				return true
+			}
 		}
 	}
 	return false

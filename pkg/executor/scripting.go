@@ -486,7 +486,7 @@ func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition,
 // succeeds. One second is enough for a hierarchy round-trip while keeping
 // false guards cheap; explicit `timeout:` on the condition or selector
 // still overrides.
-const defaultConditionTimeoutMs = 1000
+const defaultConditionTimeoutMs = 500
 
 // conditionTimeout returns the timeout to use for a condition check.
 // Priority: 1) Condition.Timeout, 2) Selector.Timeout, 3) defaultConditionTimeoutMs
@@ -564,6 +564,17 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 	case *flow.ScrollUntilVisibleStep:
 		s.Element = *se.expandSelector(&s.Element)
 		s.Direction = se.ExpandVariables(s.Direction)
+	case *flow.SwipeStep:
+		// SwipeStep was missing here entirely: a swipe selector with
+		// ${output.x} (e.g. element-targeted swipe-to-delete on a
+		// date-suffixed row id) kept the literal "${output.x}" and could
+		// never match.
+		if s.Selector != nil {
+			s.Selector = se.expandSelector(s.Selector)
+		}
+		s.Direction = se.ExpandVariables(s.Direction)
+		s.Start = se.ExpandVariables(s.Start)
+		s.End = se.ExpandVariables(s.End)
 	case *flow.SetAirplaneModeStep:
 		if str, ok := s.EnabledRaw.(string); ok {
 			s.Enabled = parseBoolExpr(se.ExpandVariables(str))

@@ -295,6 +295,11 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 		} else if err := valueNode.Decode(&s); err != nil {
 			return nil, wrapParseError(sourcePath, valueNode.Line, err)
 		}
+		// `from:` is upstream Maestro's key for the element-targeted
+		// swipe selector — fold it into Selector so both spellings work.
+		if s.Selector == nil && s.From != nil {
+			s.Selector = s.From
+		}
 		s.StepType = stepType
 		return &s, nil
 
