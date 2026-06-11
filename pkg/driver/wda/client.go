@@ -225,6 +225,27 @@ func (c *Client) LongPress(x, y float64, durationSec float64) error {
 }
 
 // Swipe performs a swipe gesture.
+// SwipeWithVelocity performs Apple's pressForDuration:thenDragToCoordinate:
+// withVelocity:thenHoldForDuration: gesture (the /wda/pressAndDragWithVelocity
+// endpoint). Unlike the constant-duration dragfromtoforduration, this moves
+// at a fixed velocity (points/sec) after a near-zero press, which is what
+// drives React-Native-Gesture-Handler swipe-to-delete reliably: a high
+// velocity clears RNGH's Pan-activation threshold within the first frames,
+// before the row's delayLongPress:300 timer can fire (a slow constant drag
+// crawls past the threshold and trips the long-press instead).
+func (c *Client) SwipeWithVelocity(fromX, fromY, toX, toY, pressDuration, velocity, holdDuration float64) error {
+	_, err := c.post(c.sessionPath("/wda/pressAndDragWithVelocity"), map[string]interface{}{
+		"fromX":         fromX,
+		"fromY":         fromY,
+		"toX":           toX,
+		"toY":           toY,
+		"pressDuration": pressDuration,
+		"velocity":      velocity,
+		"holdDuration":  holdDuration,
+	})
+	return err
+}
+
 func (c *Client) Swipe(fromX, fromY, toX, toY float64, durationSec float64) error {
 	_, err := c.post(c.sessionPath("/wda/dragfromtoforduration"), map[string]interface{}{
 		"fromX":    fromX,

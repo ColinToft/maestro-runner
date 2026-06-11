@@ -530,6 +530,27 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 	return errorResult(fmt.Errorf("element not found after scrolling"), fmt.Sprintf("Element not found: %s", selectorDesc(step.Element)))
 }
 
+// performGestureSwipe drives a swipe-to-delete-style gesture via Apple's
+// velocity drag (see Client.SwipeWithVelocity). A near-zero press duration
+// plus a high velocity clears RNGH's Pan threshold before delayLongPress,
+// which the constant-velocity dragfromtoforduration could not do reliably.
+// Velocity (points/sec) and press duration are env-tunable for calibration.
+func (d *Driver) performGestureSwipe(fromX, fromY, toX, toY float64) error {
+	velocity := 1200.0
+	if v := os.Getenv("MR_SWIPE_VELOCITY"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			velocity = f
+		}
+	}
+	press := 0.0
+	if v := os.Getenv("MR_SWIPE_PRESS"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			press = f
+		}
+	}
+	return d.client.SwipeWithVelocity(fromX, fromY, toX, toY, press, velocity, 0.0)
+}
+
 func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 	width, height, err := d.screenSize()
 	if err != nil {
@@ -604,11 +625,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 				default:
 					return errorResult(fmt.Errorf("invalid direction: %s", step.Direction), "Invalid swipe direction")
 				}
-				duration := 0.1
-				if step.Duration > 0 {
-					duration = float64(step.Duration) / 1000.0
-				}
-				if err := d.client.Swipe(fromX, fromY, toX, toY, duration); err != nil {
+				if err := d.performGestureSwipe(fromX, fromY, toX, toY); err != nil {
 					return errorResult(err, "Swipe failed")
 				}
 				return successResult("Swipe completed", nil)
@@ -647,12 +664,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		}
 	}
 
-	duration := 0.1
-	if step.Duration > 0 {
-		duration = float64(step.Duration) / 1000.0
-	}
-
-	if err := d.client.Swipe(fromX, fromY, toX, toY, duration); err != nil {
+	if err := d.performGestureSwipe(fromX, fromY, toX, toY); err != nil {
 		return errorResult(err, "Swipe failed")
 	}
 
