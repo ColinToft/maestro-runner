@@ -2347,7 +2347,7 @@ func TestSwipeStartEndCoordinates(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(path, "/dragfromtoforduration") {
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
 			body, readErr := io.ReadAll(r.Body)
 			if readErr != nil {
 				t.Fatalf("Failed to read body: %v", readErr)
@@ -2408,7 +2408,7 @@ func TestSwipeDirectPixelCoordinates(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(path, "/dragfromtoforduration") {
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
 			body, readErr := io.ReadAll(r.Body)
 			if readErr != nil {
 				t.Fatalf("Failed to read body: %v", readErr)
@@ -2467,7 +2467,7 @@ func TestSwipeDirectionLeftCoords(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(path, "/dragfromtoforduration") {
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
 			body, readErr := io.ReadAll(r.Body)
 			if readErr != nil {
 				t.Fatalf("Failed to read body: %v", readErr)
@@ -2511,7 +2511,7 @@ func TestSwipeDirectionRightCoords(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(path, "/dragfromtoforduration") {
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
 			body, readErr := io.ReadAll(r.Body)
 			if readErr != nil {
 				t.Fatalf("Failed to read body: %v", readErr)
@@ -2570,27 +2570,24 @@ func TestSwipeInvalidDirectionError(t *testing.T) {
 
 // TestSwipeCustomDuration tests swipe with custom duration.
 func TestSwipeCustomDuration(t *testing.T) {
-	var sentDuration float64
+	// The velocity drag (pressAndDragWithVelocity) replaced the
+	// constant-duration dragfromtoforduration, so a swipe's `duration` is
+	// ignored; the per-step `velocity` field controls the gesture instead.
+	var sentVelocity float64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
-
 		if strings.Contains(path, "/window/size") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
 			})
 			return
 		}
-		if strings.Contains(path, "/dragfromtoforduration") {
-			body, readErr := io.ReadAll(r.Body)
-			if readErr != nil {
-				t.Fatalf("Failed to read body: %v", readErr)
-			}
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
+			body, _ := io.ReadAll(r.Body)
 			var payload map[string]interface{}
-			if err := json.Unmarshal(body, &payload); err != nil {
-				t.Fatalf("Failed to unmarshal body: %v", err)
-			}
-			sentDuration, _ = payload["duration"].(float64)
+			_ = json.Unmarshal(body, &payload)
+			sentVelocity, _ = payload["velocity"].(float64)
 			jsonResponse(w, map[string]interface{}{"status": 0})
 			return
 		}
@@ -2599,22 +2596,16 @@ func TestSwipeCustomDuration(t *testing.T) {
 	defer server.Close()
 	driver := createTestDriver(server)
 
-	step := &flow.SwipeStep{
-		Direction: "up",
-		Duration:  2000, // 2000ms = 2.0 seconds
-	}
+	step := &flow.SwipeStep{Start: "50%, 80%", End: "50%, 20%", Velocity: 777}
 	result := driver.swipe(step)
-
 	if !result.Success {
 		t.Fatalf("Expected success, got: %s", result.Message)
 	}
-	// duration = 2000 / 1000.0 = 2.0
-	if sentDuration < 1.9 || sentDuration > 2.1 {
-		t.Errorf("Expected duration near 2.0, got: %.2f", sentDuration)
+	if sentVelocity != 777 {
+		t.Errorf("Expected per-step velocity 777 to be sent, got: %v", sentVelocity)
 	}
 }
 
-// TestSwipeWithSelector tests swipe with direction and selector (element bounds).
 func TestSwipeWithSelector(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

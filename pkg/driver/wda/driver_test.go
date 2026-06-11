@@ -2925,7 +2925,7 @@ func TestSetOrientationError(t *testing.T) {
 func TestSwipeWithCoordinateError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/wda/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/wda/pressAndDragWithVelocity") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{
 					"error":   "swipe failed",
@@ -5149,7 +5149,7 @@ func TestSwipeError(t *testing.T) {
 			})
 			return
 		}
-		if strings.Contains(r.URL.Path, "/dragfromtoforduration") {
+		if strings.Contains(r.URL.Path, "/pressAndDragWithVelocity") {
 			jsonResponse(w, map[string]interface{}{
 				"value": map[string]interface{}{"error": "drag failed"},
 			})

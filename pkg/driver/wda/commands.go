@@ -530,23 +530,32 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 	return errorResult(fmt.Errorf("element not found after scrolling"), fmt.Sprintf("Element not found: %s", selectorDesc(step.Element)))
 }
 
-// performGestureSwipe drives a swipe-to-delete-style gesture via Apple's
-// velocity drag (see Client.SwipeWithVelocity). A near-zero press duration
-// plus a high velocity clears RNGH's Pan threshold before delayLongPress,
-// which the constant-velocity dragfromtoforduration could not do reliably.
-// Velocity (points/sec) and press duration are env-tunable for calibration.
-func (d *Driver) performGestureSwipe(fromX, fromY, toX, toY float64) error {
+// performGestureSwipe drives a swipe gesture via Apple's velocity drag (see
+// Client.SwipeWithVelocity). For swipe-to-delete the default near-zero press
+// + high velocity clears RNGH's Pan threshold before delayLongPress, which
+// the constant-velocity dragfromtoforduration could not do reliably. The
+// step may override press duration / velocity (e.g. a drag-to-reorder needs
+// a ~400ms press to trigger onLongPress and a slower velocity to track).
+// Resolution order: per-step field > env (MR_SWIPE_PRESS / MR_SWIPE_VELOCITY)
+// > default.
+func (d *Driver) performGestureSwipe(step *flow.SwipeStep, fromX, fromY, toX, toY float64) error {
 	velocity := 1200.0
 	if v := os.Getenv("MR_SWIPE_VELOCITY"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
 			velocity = f
 		}
 	}
+	if step != nil && step.Velocity > 0 {
+		velocity = step.Velocity
+	}
 	press := 0.0
 	if v := os.Getenv("MR_SWIPE_PRESS"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			press = f
 		}
+	}
+	if step != nil && step.PressDuration > 0 {
+		press = float64(step.PressDuration) / 1000.0
 	}
 	return d.client.SwipeWithVelocity(fromX, fromY, toX, toY, press, velocity, 0.0)
 }
@@ -625,7 +634,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 				default:
 					return errorResult(fmt.Errorf("invalid direction: %s", step.Direction), "Invalid swipe direction")
 				}
-				if err := d.performGestureSwipe(fromX, fromY, toX, toY); err != nil {
+				if err := d.performGestureSwipe(step, fromX, fromY, toX, toY); err != nil {
 					return errorResult(err, "Swipe failed")
 				}
 				return successResult("Swipe completed", nil)
@@ -664,7 +673,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		}
 	}
 
-	if err := d.performGestureSwipe(fromX, fromY, toX, toY); err != nil {
+	if err := d.performGestureSwipe(step, fromX, fromY, toX, toY); err != nil {
 		return errorResult(err, "Swipe failed")
 	}
 

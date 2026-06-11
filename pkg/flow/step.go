@@ -208,6 +208,15 @@ type SwipeStep struct {
 	Duration              int       `yaml:"duration"` // Duration in ms
 	Speed                 int       `yaml:"speed"`    // Speed 0-100
 	WaitToSettleTimeoutMs int       `yaml:"waitToSettleTimeoutMs"`
+	// PressDuration (ms) and Velocity (points/sec) tune the underlying
+	// velocity drag (Client.SwipeWithVelocity), per-step overrides of the
+	// MR_SWIPE_PRESS / MR_SWIPE_VELOCITY defaults. Needed when one flow
+	// mixes gesture types: swipe-to-delete wants ~0 press + fast velocity
+	// (clear RNGH's Pan threshold before delayLongPress), while drag-to-
+	// REORDER wants ~400ms press (trigger onLongPress -> drag mode) + a
+	// slower velocity (so the row tracks the finger instead of flinging).
+	PressDuration int     `yaml:"pressDuration"`
+	Velocity      float64 `yaml:"velocity"`
 }
 
 // ScrollStep scrolls the screen.
