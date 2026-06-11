@@ -957,7 +957,7 @@ func (d *Driver) applySessionSettings() {
 	sessionSettings := map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
-		"animationCoolOffTimeout": 0.5,
+		"animationCoolOffTimeout": animationCoolOff(),
 		"defaultAlertAction":      d.alertAction,
 	}
 	if d.alertAction == "accept" {

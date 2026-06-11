@@ -2,6 +2,8 @@
 package wda
 
 import (
+	"os"
+	"strconv"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -36,6 +38,23 @@ func NewClient(port uint16) *Client {
 // CreateSession creates a new WDA session.
 // If alertAction is non-empty ("accept" or "dismiss"), it sets defaultAlertAction
 // in the session capabilities, enabling WDA's auto alert handling for permission dialogs.
+
+// animationCoolOff returns the WDA animationCoolOffTimeout to apply.
+// WDA gates BOTH page-source snapshots (FBXPath waits for quiescence-
+// including-animations-idle before serializing) and post-touch
+// stabilization on this value. 0 disables those waits entirely; under
+// parallel-simulator load the quiescence wait dominates find latency
+// because a contended RN app rarely reports "stable".
+// Override with MR_ANIMATION_COOLOFF (seconds, e.g. "0", "0.5").
+func animationCoolOff() float64 {
+	if v := os.Getenv("MR_ANIMATION_COOLOFF"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
+			return f
+		}
+	}
+	return 0.5
+}
+
 func (c *Client) CreateSession(bundleID string, alertAction string) error {
 	alwaysMatch := map[string]interface{}{
 		"shouldWaitForQuiescence": false,
@@ -54,7 +73,7 @@ func (c *Client) CreateSession(bundleID string, alertAction string) error {
 		// (modal open/close, row slide-out) settle before the next
 		// snapshot — at 0 the runner outruns the UI and reads
 		// mid-animation frames, which flips fast flows from slow to racy.
-		"animationCoolOffTimeout": 0.5,
+		"animationCoolOffTimeout": animationCoolOff(),
 		"shouldUseTestManagerForVisibilityDetection": false,
 	}
 	// An empty bundleID creates a session WITHOUT launching any app —
@@ -108,7 +127,7 @@ func (c *Client) DisableQuiescence() error {
 	return c.UpdateSettings(map[string]interface{}{
 		"shouldWaitForQuiescence": false,
 		"waitForIdleTimeout":      0,
-		"animationCoolOffTimeout": 0.5,
+		"animationCoolOffTimeout": animationCoolOff(),
 	})
 }
 
@@ -266,7 +285,16 @@ func (c *Client) Screenshot() ([]byte, error) {
 
 // Source returns the UI hierarchy as XML.
 func (c *Client) Source() (string, error) {
-	resp, err := c.get(c.sessionPath("/source"))
+	// Exclude the `visible` and `accessible` attributes from the XML
+	// serialization. Both are resolved per-node via hit-testing/occlusion
+	// checks over XCTest IPC and dominate snapshot cost (measured on a
+	// ~120-element React Native tree: full source 1.3-1.7s vs 0.2-0.9s
+	// excluded — the parse itself is ~1ms). The find pipeline doesn't
+	// need them: candidate filtering is bounds-based (FilterOutOfBounds),
+	// and XCUITest's visible flag is unreliable on RN wrapper views
+	// anyway (the reason the bounds-override logic exists). Elements
+	// missing the attribute parse as Displayed=true.
+	resp, err := c.get(c.sessionPath("/source?format=xml&excluded_attributes=visible,accessible"))
 	if err != nil {
 		return "", err
 	}

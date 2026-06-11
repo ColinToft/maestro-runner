@@ -1,6 +1,7 @@
 package wda
 
 import (
+	"os"
 	"context"
 	"fmt"
 	"log"
@@ -858,6 +859,12 @@ func buildStateFilter(sel flow.Selector) string {
 // Used primarily by assertions — tries generic predicate first since most asserts
 // target StaticText/labels, not TextFields. Tap actions use findElementForTap instead.
 func (d *Driver) findElementByWDA(sel flow.Selector) (*core.ElementInfo, error) {
+	if findTiming {
+		t0 := time.Now()
+		defer func() {
+			logger.Info("[timing] wda query=%dms sel=%s", time.Since(t0).Milliseconds(), selectorLog(sel))
+		}()
+	}
 	stateFilter := buildStateFilter(sel)
 
 	// Combined id + text: BOTH must match the same element (AND semantics,
@@ -1106,13 +1113,26 @@ func (d *Driver) resolveRelativeSelector(sel flow.Selector, allElements []*Parse
 }
 
 // findElementByPageSourceOnce performs a single page source search.
+var findTiming = os.Getenv("MR_FIND_TIMING") == "1"
+
 func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*core.ElementInfo, error) {
+	t0 := time.Now()
 	pageSource, err := d.client.Source()
+	tFetch := time.Since(t0)
 	if err != nil {
+		if findTiming {
+			logger.Info("[timing] source fetch FAILED after %dms: %v", tFetch.Milliseconds(), err)
+		}
 		return nil, err
 	}
 
+	t1 := time.Now()
 	allElements, err := ParsePageSource(pageSource)
+	tParse := time.Since(t1)
+	if findTiming {
+		logger.Info("[timing] source fetch=%dms (%dKB) parse=%dms elements=%d sel=%s",
+			tFetch.Milliseconds(), len(pageSource)/1024, tParse.Milliseconds(), len(allElements), selectorLog(sel))
+	}
 	if err != nil {
 		return nil, err
 	}
