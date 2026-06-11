@@ -1115,6 +1115,26 @@ func (d *Driver) resolveRelativeSelector(sel flow.Selector, allElements []*Parse
 // findElementByPageSourceOnce performs a single page source search.
 var findTiming = os.Getenv("MR_FIND_TIMING") == "1"
 
+// existsInFullTree reports whether any element in the FULL accessibility
+// tree matches sel — including off-screen elements (no FilterOutOfBounds).
+// One /source fetch, one in-memory scan, no scrolling or polling. This is
+// the right primitive for "does this element exist at all" existence
+// checks (e.g. assertNotVisible of a list row that may be scrolled below
+// the fold), where the on-screen-only bounds filter would otherwise miss
+// it and report a false absence.
+func (d *Driver) existsInFullTree(sel flow.Selector) (bool, error) {
+	pageSource, err := d.client.Source()
+	if err != nil {
+		return false, err
+	}
+	allElements, err := ParsePageSource(pageSource)
+	if err != nil {
+		return false, err
+	}
+	// NB: no FilterOutOfBounds — we want the whole tree.
+	return len(FilterBySelector(allElements, sel)) > 0, nil
+}
+
 func (d *Driver) findElementByPageSourceOnce(sel flow.Selector) (*core.ElementInfo, error) {
 	t0 := time.Now()
 	pageSource, err := d.client.Source()

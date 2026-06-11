@@ -222,8 +222,11 @@ func (d *Driver) assertNotVisible(step *flow.AssertNotVisibleStep) *core.Command
 	pollInterval := 500 * time.Millisecond
 
 	for {
-		info, err := d.findElementOnce(step.Selector)
-		if err != nil || info == nil {
+		// Full-tree existence check: a row scrolled below the fold still
+		// counts as present, so the flow no longer needs to scroll it into
+		// view before asserting absence.
+		exists, err := d.existsInFullTree(step.Selector)
+		if err != nil || !exists {
 			return successResult("Element is not visible", nil)
 		}
 

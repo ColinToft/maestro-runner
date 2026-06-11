@@ -62,7 +62,16 @@
                                             error:error]) {
     return NO;
   }
-  [self fb_waitUntilStableWithTimeout:FBConfiguration.animationCoolOffTimeout];
+  // PATCHED (maestro-runner fork): no post-action stabilization wait.
+  // This wait does not protect correctness — it only delays returning to
+  // the client after the gesture has already been delivered. Correctness
+  // is protected where it matters: the PRE-action element lookup goes
+  // through the page-source path, which still waits for UI stability
+  // (FBXPath -> fb_waitUntilStableWithTimeout) before serializing, so
+  // tap coordinates are never computed from mid-animation frames. The
+  // post-action wait cost ~0.4-0.5s of pure idle per tap (~25-40 taps
+  // per flow) because a React Native app under automation rarely
+  // reports "stable" early.
   return YES;
 }
 
