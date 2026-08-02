@@ -41,6 +41,7 @@ func (d *Driver) tapOn(step *flow.TapOnStep) *core.CommandResult {
 		}
 		return errorResult(err, fmt.Sprintf("Element not found: %s", selectorDesc(step.Selector)))
 	}
+	info = d.stabilizeFrame(step.Selector, info)
 
 	// If Point is specified WITH selector, tap at relative position within element bounds
 	if step.Point != "" && info != nil && info.Bounds.Width > 0 {
@@ -124,6 +125,7 @@ func (d *Driver) doubleTapOn(step *flow.DoubleTapOnStep) *core.CommandResult {
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Element not found: %s", selectorDesc(step.Selector)))
 	}
+	info = d.stabilizeFrame(step.Selector, info)
 
 	x := float64(info.Bounds.X + info.Bounds.Width/2)
 	y := float64(info.Bounds.Y + info.Bounds.Height/2)
@@ -140,6 +142,7 @@ func (d *Driver) longPressOn(step *flow.LongPressOnStep) *core.CommandResult {
 	if err != nil {
 		return errorResult(err, fmt.Sprintf("Element not found: %s", selectorDesc(step.Selector)))
 	}
+	info = d.stabilizeFrame(step.Selector, info)
 
 	x := float64(info.Bounds.X + info.Bounds.Width/2)
 	y := float64(info.Bounds.Y + info.Bounds.Height/2)
@@ -606,6 +609,7 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 			if err != nil {
 				return errorResult(err, fmt.Sprintf("Element not found for swipe: %s", step.Selector.Describe()))
 			}
+			info = d.stabilizeFrame(*step.Selector, info)
 			if info != nil && info.Bounds.Width > 0 {
 				cx := float64(info.Bounds.X) + float64(info.Bounds.Width)/2
 				cy := float64(info.Bounds.Y) + float64(info.Bounds.Height)/2

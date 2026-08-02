@@ -554,6 +554,54 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 	return d.findElement(sel, optional, stepTimeoutMs)
 }
 
+// stabilizeFrame re-resolves sel until two consecutive resolutions agree on
+// the element's frame, then returns the settled resolution. XCUITest reports
+// an element's CURRENT on-screen frame, so a tree captured while a screen
+// transition is mid-flight yields coordinates that are stale by the time the
+// synthesized touch lands — the touch hits whatever settles INTO that point
+// instead of the target. When the squatter is inert the tap is silently
+// lost; when it's interactive the tap performs a different action entirely
+// (2026-08-02: a bottom sheet's mid-slide-up segmented-control frame put the
+// tap on the date picker's year wheel two rows up — the "tap" re-anchored a
+// recurring series two years into the past).
+//
+// Bounded and fail-open: on timeout or repeated resolution errors it returns
+// the best resolution it has rather than failing the step — the guard must
+// never make a previously-passing tap fail.
+func (d *Driver) stabilizeFrame(sel flow.Selector, info *core.ElementInfo) *core.ElementInfo {
+	if sel.IsEmpty() || info == nil || info.Bounds.Width <= 0 {
+		return info
+	}
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	prev := info
+	errStreak := 0
+	for time.Now().Before(deadline) {
+		next, err := d.findElementByPageSourceOnce(sel)
+		if err != nil {
+			// A selector resolvable only via WDA predicate queries (not page
+			// source) would never converge here — bail to the original
+			// resolution after two consecutive misses instead of eating the
+			// full window on every such tap.
+			errStreak++
+			if errStreak >= 2 {
+				return prev
+			}
+			time.Sleep(60 * time.Millisecond)
+			continue
+		}
+		errStreak = 0
+		if next.Bounds == prev.Bounds {
+			return next
+		}
+		logger.Debug("stabilizeFrame: %s moved (%d,%d)->(%d,%d), waiting for settle",
+			sel.Describe(), prev.Bounds.X, prev.Bounds.Y, next.Bounds.X, next.Bounds.Y)
+		prev = next
+		time.Sleep(60 * time.Millisecond)
+	}
+	logger.Debug("stabilizeFrame: %s did not settle within window; using last frame", sel.Describe())
+	return prev
+}
+
 // findElementForTapWithContext implements the smart tap element finding strategy.
 // Tries interactive WDA queries first (TextField, SecureTextField, Button), then falls back
 // to generic predicate to check if text exists, and finally page source with clickable parent lookup.
