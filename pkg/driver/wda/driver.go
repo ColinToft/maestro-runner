@@ -593,8 +593,9 @@ func (d *Driver) stabilizeFrame(sel flow.Selector, info *core.ElementInfo) *core
 		if next.Bounds == prev.Bounds {
 			return next
 		}
-		logger.Debug("stabilizeFrame: %s moved (%d,%d)->(%d,%d), waiting for settle",
-			sel.Describe(), prev.Bounds.X, prev.Bounds.Y, next.Bounds.X, next.Bounds.Y)
+		logger.Debug("stabilizeFrame: %s moved (%d,%d %dx%d)->(%d,%d %dx%d), waiting for settle",
+			sel.Describe(), prev.Bounds.X, prev.Bounds.Y, prev.Bounds.Width, prev.Bounds.Height,
+			next.Bounds.X, next.Bounds.Y, next.Bounds.Width, next.Bounds.Height)
 		prev = next
 		time.Sleep(60 * time.Millisecond)
 	}
