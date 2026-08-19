@@ -568,15 +568,29 @@ func (d *Driver) findElementForTap(sel flow.Selector, optional bool, stepTimeout
 // Bounded and fail-open: on timeout or repeated resolution errors it returns
 // the best resolution it has rather than failing the step — the guard must
 // never make a previously-passing tap fail.
+//
+// Re-resolution must use the SAME resolver the caller used. findElementByPageSourceOnce
+// ignores relative selectors (below/above/leftOf/rightOf/childOf/…) — only
+// resolveRelativeSelector applies them — so re-resolving a relative selector
+// through it silently drops the constraint and re-picks by document order.
+// That is not a lost tap but a tap on a DIFFERENT element, reported as a
+// success with the wrong element attached (2026-08-19: `text: ^Delete$ below:
+// <alert title>` resolved correctly to an alert button, then stabilized onto a
+// list row's hidden swipe-delete label 300pt above it — the tap did nothing,
+// the modal alert stayed up, and every later flow on that device failed).
 func (d *Driver) stabilizeFrame(sel flow.Selector, info *core.ElementInfo) *core.ElementInfo {
 	if sel.IsEmpty() || info == nil || info.Bounds.Width <= 0 {
 		return info
+	}
+	resolve := d.findElementByPageSourceOnce
+	if sel.HasRelativeSelector() {
+		resolve = d.findElementRelativeOnce
 	}
 	deadline := time.Now().Add(2500 * time.Millisecond)
 	prev := info
 	errStreak := 0
 	for time.Now().Before(deadline) {
-		next, err := d.findElementByPageSourceOnce(sel)
+		next, err := resolve(sel)
 		if err != nil {
 			// A selector resolvable only via WDA predicate queries (not page
 			// source) would never converge here — bail to the original

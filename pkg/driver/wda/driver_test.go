@@ -6029,3 +6029,64 @@ func TestFindElementByWDACombinedIDTextNoFallback(t *testing.T) {
 		t.Errorf("Expected exactly 1 (compound) query, got %d — single-field fallbacks change match semantics", queryCount)
 	}
 }
+
+// mockWDAServerForAmbiguousRelative serves a tree with TWO elements labelled
+// "Delete": one ABOVE the anchor (a list row's swipe action) and the alert's
+// own button BELOW it. Document order puts the wrong one first, so any
+// resolution that drops the relative constraint picks it.
+func mockWDAServerForAmbiguousRelative() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/source") {
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeButton type="XCUIElementTypeButton" name="Delete" label="Delete" enabled="true" visible="true" x="290" y="100" width="60" height="30"/>
+    <XCUIElementTypeStaticText type="XCUIElementTypeStaticText" name="Delete thing?" label="Delete thing?" enabled="true" visible="true" x="50" y="300" width="290" height="20"/>
+    <XCUIElementTypeButton type="XCUIElementTypeButton" name="Delete" label="Delete" enabled="true" visible="true" x="200" y="400" width="140" height="48"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/window/size") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+}
+
+// TestStabilizeFrameKeepsRelativeConstraint pins the re-resolution inside
+// stabilizeFrame to the same resolver the caller used. Dropping the relative
+// constraint here does not lose a tap, it MOVES it to another element and
+// still reports success.
+func TestStabilizeFrameKeepsRelativeConstraint(t *testing.T) {
+	server := mockWDAServerForAmbiguousRelative()
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	sel := flow.Selector{
+		Text:  "^Delete$",
+		Below: &flow.Selector{Text: "Delete thing\\?"},
+	}
+
+	resolved, err := driver.findElementRelativeOnce(sel)
+	if err != nil {
+		t.Fatalf("relative resolution failed: %v", err)
+	}
+	if resolved.Bounds.Y != 400 {
+		t.Fatalf("relative resolution picked the wrong Delete: y=%d, want 400", resolved.Bounds.Y)
+	}
+
+	settled := driver.stabilizeFrame(sel, resolved)
+	if settled == nil {
+		t.Fatal("stabilizeFrame returned nil")
+	}
+	if settled.Bounds.Y != 400 {
+		t.Fatalf("stabilizeFrame moved the tap to y=%d (the swipe action above the anchor), want 400", settled.Bounds.Y)
+	}
+}
