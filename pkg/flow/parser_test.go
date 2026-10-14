@@ -1877,3 +1877,40 @@ func TestFlow_GetTestCases(t *testing.T) {
 		t.Errorf("testCases[1].File = %q, want 'checkout.yaml'", testCases[1].File)
 	}
 }
+
+func TestParse_SwipeTo(t *testing.T) {
+	flow, err := Parse([]byte(`
+- swipe:
+    from:
+      id: "row-a"
+    to:
+      text: "B"
+    pressDuration: 400
+    velocity: 600
+`), "test.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	swipe := flow.Steps[0].(*SwipeStep)
+	if swipe.Selector == nil || swipe.Selector.ID != "row-a" {
+		t.Errorf("Selector=%+v, want id row-a", swipe.Selector)
+	}
+	if swipe.To == nil || swipe.To.Text != "B" {
+		t.Errorf("To=%+v, want text B", swipe.To)
+	}
+}
+
+func TestParse_SwipeToRejectsAmbiguousShapes(t *testing.T) {
+	cases := map[string]string{
+		"no from":   "to: {text: B}",
+		"direction": "{from: {text: A}, to: {text: B}, direction: DOWN}",
+		"start/end": `{from: {text: A}, to: {text: B}, start: "1%, 1%", end: "2%, 2%"}`,
+		"startX":    "{from: {text: A}, to: {text: B}, startX: 5}",
+		"endY":      "{from: {text: A}, to: {text: B}, endY: 5}",
+	}
+	for name, body := range cases {
+		if _, err := Parse([]byte("- swipe: "+body+"\n"), "test.yaml"); err == nil {
+			t.Errorf("%s: expected a parse error", name)
+		}
+	}
+}

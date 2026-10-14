@@ -831,6 +831,10 @@ func isElementNotFoundError(err error) bool {
 }
 
 func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
+	if step.To != nil {
+		err := fmt.Errorf("swipe `to:` is supported only on the iOS WDA driver")
+		return errorResult(err, err.Error())
+	}
 	if step.Start != "" && step.End != "" {
 		return d.swipeWithCoordinates(step.Start, step.End, step.Duration)
 	}

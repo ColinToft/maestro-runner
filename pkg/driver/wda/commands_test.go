@@ -4993,3 +4993,114 @@ func TestScrollUntilVisibleHonorsSettleTimeout(t *testing.T) {
 		t.Skip("no find observed after a scroll — loop exited on deadline")
 	}
 }
+
+// TestSwipeElementToElement: `to:` presses the from element's center and
+// releases on the to element's center, with the step's press/velocity.
+func TestSwipeElementToElement(t *testing.T) {
+	var payload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		if strings.Contains(path, "/window/size") {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+			return
+		}
+		if strings.HasSuffix(path, "/source") {
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeOther type="XCUIElementTypeOther" name="row-a" label="Alpha" enabled="true" visible="true" x="0" y="400" width="390" height="40"/>
+    <XCUIElementTypeOther type="XCUIElementTypeOther" name="row-b" label="Bravo" enabled="true" visible="true" x="0" y="480" width="390" height="60"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+			})
+			return
+		}
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("Failed to unmarshal body: %v", err)
+			}
+			jsonResponse(w, map[string]interface{}{"status": 0})
+			return
+		}
+		if strings.HasSuffix(path, "/element") && r.Method == "POST" {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"error": "not found"},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	result := driver.swipe(&flow.SwipeStep{
+		Selector:      &flow.Selector{ID: "row-a"},
+		To:            &flow.Selector{ID: "row-b"},
+		PressDuration: 400,
+		Velocity:      600,
+		BaseStep:      flow.BaseStep{TimeoutMs: 2000},
+	})
+	if !result.Success {
+		t.Fatalf("Expected success, got: %s", result.Message)
+	}
+	want := map[string]float64{
+		"fromX": 195, "fromY": 420, "toX": 195, "toY": 510,
+		"pressDuration": 0.4, "velocity": 600,
+	}
+	for k, v := range want {
+		got, _ := payload[k].(float64)
+		if got != v {
+			t.Errorf("%s=%v, want %v (payload %v)", k, got, v, payload)
+		}
+	}
+}
+
+// TestSwipeElementToElementMissingTarget fails loudly, never falls back to a
+// screen swipe.
+func TestSwipeElementToElementMissingTarget(t *testing.T) {
+	swiped := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/source") {
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeOther type="XCUIElementTypeOther" name="row-a" label="Alpha" enabled="true" visible="true" x="0" y="400" width="390" height="40"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+			})
+			return
+		}
+		if strings.Contains(path, "/pressAndDragWithVelocity") {
+			swiped = true
+		}
+		if strings.HasSuffix(path, "/element") && r.Method == "POST" {
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"error": "not found"},
+			})
+			return
+		}
+		jsonResponse(w, map[string]interface{}{"status": 0})
+	}))
+	defer server.Close()
+	driver := createTestDriver(server)
+
+	result := driver.swipe(&flow.SwipeStep{
+		Selector: &flow.Selector{ID: "row-a"},
+		To:       &flow.Selector{ID: "row-missing"},
+		BaseStep: flow.BaseStep{TimeoutMs: 300},
+	})
+	if result.Success {
+		t.Fatalf("Expected failure for a missing to: element")
+	}
+	if swiped {
+		t.Errorf("swiped despite the missing target")
+	}
+}

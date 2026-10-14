@@ -666,6 +666,10 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 
 // swipe performs a swipe gesture using mouse drag.
 func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
+	if step.To != nil {
+		err := fmt.Errorf("swipe `to:` is supported only on the iOS WDA driver")
+		return errorResult(err, err.Error())
+	}
 	dir := strings.ToLower(step.Direction)
 	center := d.viewportCenter()
 	cx, cy := center.X, center.Y

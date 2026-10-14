@@ -155,6 +155,10 @@ func (d *Driver) tapOnPoint(step *flow.TapOnPointStep) *core.CommandResult {
 // Swipe and scroll
 
 func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
+	if step.To != nil {
+		err := fmt.Errorf("swipe `to:` is supported only on the iOS WDA driver")
+		return errorResult(err, err.Error())
+	}
 	w, h := d.client.ScreenSize()
 
 	// Coordinate-based swipe

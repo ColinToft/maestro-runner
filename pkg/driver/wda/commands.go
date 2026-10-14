@@ -569,6 +569,10 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 		return errorResult(err, "Failed to get screen size")
 	}
 
+	if step.To != nil {
+		return d.swipeElementToElement(step)
+	}
+
 	var fromX, fromY, toX, toY float64
 
 	// Handle coordinate-based swipe
@@ -682,6 +686,37 @@ func (d *Driver) swipe(step *flow.SwipeStep) *core.CommandResult {
 	}
 
 	return successResult("Swipe completed", nil)
+}
+
+// swipeElementToElement presses the `from` element's center and releases on
+// the `to` element's center, both frames stabilized first. The parser has
+// already rejected a `to:` without `from:` or mixed with direction/coords.
+func (d *Driver) swipeElementToElement(step *flow.SwipeStep) *core.CommandResult {
+	fromX, fromY, err := d.stableCenter(*step.Selector, step.TimeoutMs)
+	if err != nil {
+		return errorResult(err, err.Error())
+	}
+	toX, toY, err := d.stableCenter(*step.To, step.TimeoutMs)
+	if err != nil {
+		return errorResult(err, err.Error())
+	}
+	if err := d.performGestureSwipe(step, fromX, fromY, toX, toY); err != nil {
+		return errorResult(err, "Swipe failed")
+	}
+	return successResult("Swipe completed", nil)
+}
+
+func (d *Driver) stableCenter(sel flow.Selector, timeoutMs int) (float64, float64, error) {
+	info, err := d.findElement(sel, false, timeoutMs)
+	if err != nil {
+		return 0, 0, fmt.Errorf("element not found for swipe: %s: %w", sel.Describe(), err)
+	}
+	info = d.stabilizeFrame(sel, info)
+	if info == nil || info.Bounds.Width <= 0 || info.Bounds.Height <= 0 {
+		return 0, 0, fmt.Errorf("element for swipe has no frame: %s", sel.Describe())
+	}
+	return float64(info.Bounds.X) + float64(info.Bounds.Width)/2,
+		float64(info.Bounds.Y) + float64(info.Bounds.Height)/2, nil
 }
 
 // Navigation commands

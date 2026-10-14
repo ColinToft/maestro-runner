@@ -199,6 +199,11 @@ type SwipeStep struct {
 	// selector. Accepted as an alias so existing flows run unchanged
 	// (parser merges it into Selector).
 	From *Selector `yaml:"from"`
+	// To makes the swipe an element-to-element drag: press the From
+	// element's center, release on To's center. For drag-to-reorder, where
+	// screen percentages drift whenever the layout around the rows changes.
+	// Excludes Direction and every coordinate field.
+	To *Selector `yaml:"to"`
 	Start                 string    `yaml:"start"`    // "x%, y%"
 	End                   string    `yaml:"end"`      // "x%, y%"
 	StartX                int       `yaml:"startX"`   // Absolute X start

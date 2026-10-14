@@ -454,6 +454,10 @@ func (d *Driver) handleHideKeyboard(s *flow.HideKeyboardStep) *core.CommandResul
 // for iOS we always use `drag` with concrete coordinates and compute the
 // from/to points from direction or percentage/absolute coords.
 func (d *Driver) handleSwipe(s *flow.SwipeStep) *core.CommandResult {
+	if s.To != nil {
+		err := fmt.Errorf("swipe `to:` is supported only on the iOS WDA driver")
+		return core.ErrorResult(err, err.Error())
+	}
 	fromX, fromY, toX, toY, err := d.resolveSwipeCoords(s)
 	if err != nil {
 		return core.ErrorResult(err, "swipe: "+err.Error())

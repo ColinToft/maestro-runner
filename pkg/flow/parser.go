@@ -300,6 +300,17 @@ func decodeStep(stepType StepType, valueNode *yaml.Node, sourcePath string) (Ste
 		if s.Selector == nil && s.From != nil {
 			s.Selector = s.From
 		}
+		if s.To != nil {
+			if s.Selector == nil || s.Selector.IsEmpty() {
+				return nil, wrapParseError(sourcePath, valueNode.Line,
+					fmt.Errorf("swipe: `to:` needs a `from:` element"))
+			}
+			if s.Direction != "" || s.Start != "" || s.End != "" ||
+				s.StartX != 0 || s.StartY != 0 || s.EndX != 0 || s.EndY != 0 {
+				return nil, wrapParseError(sourcePath, valueNode.Line,
+					fmt.Errorf("swipe: `to:` excludes direction and start/end coordinates"))
+			}
+		}
 		s.StepType = stepType
 		return &s, nil
 
