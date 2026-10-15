@@ -3,6 +3,7 @@ package wda
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -474,10 +475,21 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 	return successResult(fmt.Sprintf("Scrolled %s", step.Direction), nil)
 }
 
+// scrollUntilVisible scrolls until the element is on screen (Maestro
+// semantics): at least visibilityPercentage of its area, or any of it when
+// unset. With centerElement it is then dragged to the screen center along the
+// scroll axis, and the step fails if it cannot get there.
 func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.CommandResult {
 	direction := strings.ToLower(step.Direction)
 	if direction == "" {
 		direction = "down"
+	}
+	if step.VisibilityPercentage < 0 || step.VisibilityPercentage > 100 {
+		return errorResult(fmt.Errorf("visibilityPercentage must be 0-100, got %d", step.VisibilityPercentage), "Invalid scrollUntilVisible option")
+	}
+	width, height, err := d.screenSize()
+	if err != nil {
+		return errorResult(err, "Failed to get screen size")
 	}
 
 	maxScrolls := 20
@@ -499,6 +511,24 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 		settle = time.Duration(step.WaitToSettleTimeoutMs) * time.Millisecond
 	}
 
+	// Centering brings the element fully on screen itself, so it only needs
+	// the element to have appeared; the percentage is checked afterwards.
+	required := float64(step.VisibilityPercentage)
+	if step.CenterElement {
+		required = 0
+	}
+	find := func(budgetMs int) *core.ElementInfo {
+		info, err := d.findElement(step.Element, true, budgetMs)
+		if err != nil || info == nil {
+			return nil
+		}
+		visible := visiblePercentage(info.Bounds, width, height)
+		if visible == 0 || visible < required {
+			return nil
+		}
+		return info
+	}
+
 	for i := 0; i < maxScrolls && time.Now().Before(deadline); i++ {
 		// 2s in-loop find budget. On deep hierarchies (e.g. React Native)
 		// the WDA server-side query alone can take ~800ms and miss, and the
@@ -506,9 +536,8 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 		// testIDs — needs a few hundred ms more; a 1s budget killed it
 		// mid-parse on every iteration, so the loop scrolled straight past
 		// targets that were on screen.
-		info, err := d.findElement(step.Element, true, 2000)
-		if err == nil && info != nil {
-			return successResult("Element found after scrolling", info)
+		if info := find(2000); info != nil {
+			return d.placeScrolledElement(step, direction, settle, info)
 		}
 
 		// Scroll
@@ -521,16 +550,120 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 		time.Sleep(settle) // Wait for scroll animation
 	}
 
-	// Final check with a fuller budget: the loop's 1s per-iteration find is
-	// deliberately tight to keep scrolling responsive, but on deep
-	// hierarchies a single find (WDA query + page-source parse) can exceed
-	// it even with the element on screen — don't fail without one unhurried
-	// look at the settled UI.
-	if info, err := d.findElement(step.Element, true, 3000); err == nil && info != nil {
-		return successResult("Element found after scrolling", info)
+	// Final check with a fuller budget: on deep hierarchies a single find
+	// (WDA query + page-source parse) can exceed the loop's budget even with
+	// the element on screen — don't fail without one unhurried look at the
+	// settled UI.
+	if info := find(3000); info != nil {
+		return d.placeScrolledElement(step, direction, settle, info)
 	}
 
 	return errorResult(fmt.Errorf("element not found after scrolling"), fmt.Sprintf("Element not found: %s", selectorDesc(step.Element)))
+}
+
+// placeScrolledElement finishes a scrollUntilVisible whose element is on
+// screen: centers it when centerElement is set, then requires
+// visibilityPercentage of it to be visible.
+func (d *Driver) placeScrolledElement(step *flow.ScrollUntilVisibleStep, direction string, settle time.Duration, info *core.ElementInfo) *core.CommandResult {
+	if !step.CenterElement {
+		return successResult("Element found after scrolling", info)
+	}
+	centered, err := d.centerElement(step.Element, direction, settle, info)
+	if err != nil {
+		return errorResult(err, fmt.Sprintf("Element not centered: %s", selectorDesc(step.Element)))
+	}
+	width, height, err := d.screenSize()
+	if err != nil {
+		return errorResult(err, "Failed to get screen size")
+	}
+	if visible := visiblePercentage(centered.Bounds, width, height); visible < float64(step.VisibilityPercentage) {
+		return errorResult(fmt.Errorf("only %.0f%% visible once centered, need %d%%", visible, step.VisibilityPercentage),
+			fmt.Sprintf("Element not visible enough: %s", selectorDesc(step.Element)))
+	}
+	return successResult("Element centered after scrolling", centered)
+}
+
+// centerTolerance is how far, as a fraction of the screen along the scroll
+// axis, an element's center may sit from the screen's center and still count
+// as centered (Maestro's isElementNearScreenCenter).
+const centerTolerance = 0.1
+
+// maxCenterDrags bounds centerElement's corrective drags.
+const maxCenterDrags = 4
+
+// centerElement drags the content until sel's center is within
+// centerTolerance of the screen center along the scroll axis. Each drag moves
+// the content by the measured offset and holds before lifting, so no fling
+// carries it past. A drag that leaves the element where it was means the
+// content is at the end of its scroll range: centering is impossible there,
+// and that is an error rather than a silent success.
+func (d *Driver) centerElement(sel flow.Selector, direction string, settle time.Duration, info *core.ElementInfo) (*core.ElementInfo, error) {
+	width, height, err := d.screenSize()
+	if err != nil {
+		return nil, err
+	}
+	var vertical bool
+	switch direction {
+	case "up", "down":
+		vertical = true
+	case "left", "right":
+		vertical = false
+	default:
+		return nil, fmt.Errorf("invalid direction: %s", direction)
+	}
+	cx, cy := float64(width)/2, float64(height)/2
+	screenCenter, extent := cy, float64(height)
+	if !vertical {
+		screenCenter, extent = cx, float64(width)
+	}
+	axisCenter := func(b core.Bounds) float64 {
+		if vertical {
+			return float64(b.Y) + float64(b.Height)/2
+		}
+		return float64(b.X) + float64(b.Width)/2
+	}
+
+	info = d.stabilizeFrame(sel, info)
+	for drags := 0; ; drags++ {
+		offset := axisCenter(info.Bounds) - screenCenter
+		if math.Abs(offset) <= extent*centerTolerance {
+			return info, nil
+		}
+		if drags == maxCenterDrags {
+			return nil, fmt.Errorf("still %.0fpt from the screen center after %d drags", offset, drags)
+		}
+		toX, toY := cx, cy-offset
+		if !vertical {
+			toX, toY = cx-offset, cy
+		}
+		if err := d.client.SwipeWithVelocity(cx, cy, toX, toY, 0, 600, 0.2); err != nil {
+			return nil, fmt.Errorf("centering drag failed: %w", err)
+		}
+		time.Sleep(settle)
+		next, err := d.findElement(sel, true, 2000)
+		if err != nil || next == nil {
+			return nil, fmt.Errorf("element lost after a centering drag: %v", err)
+		}
+		next = d.stabilizeFrame(sel, next)
+		if math.Abs(axisCenter(next.Bounds)-axisCenter(info.Bounds)) < 1 {
+			return nil, fmt.Errorf("content stopped %.0fpt from the screen center: the element sits at the end of its scroll range and cannot be centered (require visibilityPercentage instead)", offset)
+		}
+		info = next
+	}
+}
+
+// visiblePercentage is the share (0-100) of b's area that lies on a
+// width x height screen.
+func visiblePercentage(b core.Bounds, width, height int) float64 {
+	if b.Width <= 0 || b.Height <= 0 {
+		return 0
+	}
+	w := min(b.X+b.Width, width) - max(b.X, 0)
+	h := min(b.Y+b.Height, height) - max(b.Y, 0)
+	if w <= 0 || h <= 0 {
+		return 0
+	}
+	return 100 * float64(w*h) / float64(b.Width*b.Height)
 }
 
 // performGestureSwipe drives a swipe gesture via Apple's velocity drag (see

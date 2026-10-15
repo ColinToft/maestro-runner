@@ -2,7 +2,9 @@ package wda
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -5102,5 +5104,288 @@ func TestSwipeElementToElementMissingTarget(t *testing.T) {
 	}
 	if swiped {
 		t.Errorf("swiped despite the missing target")
+	}
+}
+
+// =============================================================================
+// scrollUntilVisible placement (visibilityPercentage / centerElement) tests
+// =============================================================================
+
+// scrollSim is a fake WDA server over one scrollable list on a 390x844
+// screen. The target element sits at (x, y) in content coordinates; the
+// content offset moves by each drag's travel, scaled by efficiency for the
+// velocity drags centerElement uses (touch slop makes a real scroll view lag
+// the finger), and clamped to [0, maxOffset] (the scroll range's end).
+type scrollSim struct {
+	x, y, w, h     float64
+	maxOffset      float64
+	efficiency     float64
+	horizontal     bool
+	offset         float64
+	scrolls        int
+	centeringDrags []map[string]float64
+}
+
+func (s *scrollSim) move(travel float64) {
+	s.offset = math.Max(0, math.Min(s.maxOffset, s.offset+travel))
+}
+
+func (s *scrollSim) bounds() (float64, float64) {
+	if s.horizontal {
+		return s.x - s.offset, s.y
+	}
+	return s.x, s.y - s.offset
+}
+
+func (s *scrollSim) server(t *testing.T) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		var body map[string]float64
+		if r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		axisTravel := func() float64 {
+			if s.horizontal {
+				return body["fromX"] - body["toX"]
+			}
+			return body["fromY"] - body["toY"]
+		}
+		switch {
+		case strings.HasSuffix(path, "/source"):
+			x, y := s.bounds()
+			jsonResponse(w, map[string]interface{}{"value": fmt.Sprintf(`<AppiumAUT>
+  <XCUIElementTypeApplication name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+    <XCUIElementTypeButton name="target" label="Target" enabled="true" visible="true" x="%.0f" y="%.0f" width="%.0f" height="%.0f"/>
+  </XCUIElementTypeApplication>
+</AppiumAUT>`, x, y, s.w, s.h)})
+		case strings.Contains(path, "/dragfromtoforduration"):
+			s.scrolls++
+			s.move(axisTravel())
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		case strings.Contains(path, "/pressAndDragWithVelocity"):
+			s.centeringDrags = append(s.centeringDrags, body)
+			s.move(axisTravel() * s.efficiency)
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		case strings.Contains(path, "/window/size"):
+			jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{"width": 390.0, "height": 844.0}})
+		default:
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		}
+	}))
+}
+
+func runScrollSim(t *testing.T, sim *scrollSim, step *flow.ScrollUntilVisibleStep) *core.CommandResult {
+	t.Helper()
+	server := sim.server(t)
+	defer server.Close()
+	step.Element = flow.Selector{Text: "Target"}
+	step.WaitToSettleTimeoutMs = 1
+	if step.TimeoutMs == 0 {
+		step.TimeoutMs = 30000
+	}
+	return createTestDriver(server).scrollUntilVisible(step)
+}
+
+func TestVisiblePercentage(t *testing.T) {
+	cases := []struct {
+		name string
+		b    core.Bounds
+		want float64
+	}{
+		{"fully on screen", core.Bounds{X: 50, Y: 400, Width: 100, Height: 50}, 100},
+		{"touching every edge", core.Bounds{X: 0, Y: 0, Width: 390, Height: 844}, 100},
+		{"half below the bottom", core.Bounds{X: 50, Y: 819, Width: 100, Height: 50}, 50},
+		{"quarter above the top", core.Bounds{X: 50, Y: -10, Width: 100, Height: 40}, 75},
+		{"half off the left", core.Bounds{X: -50, Y: 400, Width: 100, Height: 50}, 50},
+		{"half off the right", core.Bounds{X: 340, Y: 400, Width: 100, Height: 50}, 50},
+		{"cut on two edges", core.Bounds{X: -50, Y: 819, Width: 100, Height: 50}, 25},
+		{"taller than the screen", core.Bounds{X: 0, Y: -844, Width: 390, Height: 2532}, 100.0 / 3},
+		{"entirely below", core.Bounds{X: 50, Y: 844, Width: 100, Height: 50}, 0},
+		{"entirely above", core.Bounds{X: 50, Y: -50, Width: 100, Height: 50}, 0},
+		{"entirely left", core.Bounds{X: -100, Y: 400, Width: 100, Height: 50}, 0},
+		{"entirely right", core.Bounds{X: 390, Y: 400, Width: 100, Height: 50}, 0},
+		{"zero width", core.Bounds{X: 50, Y: 400, Width: 0, Height: 50}, 0},
+		{"zero height", core.Bounds{X: 50, Y: 400, Width: 100, Height: 0}, 0},
+	}
+	for _, c := range cases {
+		if got := visiblePercentage(c.b, 390, 844); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("%s: visiblePercentage(%+v) = %v, want %v", c.name, c.b, got, c.want)
+		}
+	}
+}
+
+// The element counts as found only once visibilityPercentage of it is on
+// screen; unset, any visible part is enough.
+func TestScrollUntilVisibleHonorsVisibilityPercentage(t *testing.T) {
+	cases := []struct {
+		pct         int
+		wantScrolls int
+	}{
+		{0, 0},   // 50% visible: any part is enough
+		{50, 0},  // exactly the threshold
+		{51, 1},  // one scroll brings it fully on screen
+		{100, 1}, // likewise
+	}
+	for _, c := range cases {
+		// Half below the bottom edge; one scroll (281pt) pulls it fully up.
+		sim := &scrollSim{x: 50, y: 819, w: 100, h: 50, maxOffset: 10000, efficiency: 1}
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: c.pct})
+		if !result.Success {
+			t.Errorf("pct %d: expected success, got %s", c.pct, result.Message)
+		}
+		if sim.scrolls != c.wantScrolls {
+			t.Errorf("pct %d: expected %d scrolls, got %d", c.pct, c.wantScrolls, sim.scrolls)
+		}
+		if len(sim.centeringDrags) != 0 {
+			t.Errorf("pct %d: no centerElement, yet %d centering drags", c.pct, len(sim.centeringDrags))
+		}
+	}
+}
+
+// A visibilityPercentage the element never reaches fails the step rather
+// than returning the partly visible element.
+func TestScrollUntilVisibleFailsBelowVisibilityPercentage(t *testing.T) {
+	// Stuck half below the bottom: the content is at the end of its range.
+	sim := &scrollSim{x: 50, y: 819, w: 100, h: 50, maxOffset: 0, efficiency: 1}
+	result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: 100, MaxScrolls: 3})
+	if result.Success {
+		t.Fatal("expected failure: the element is never more than 50% visible")
+	}
+	if sim.scrolls != 3 {
+		t.Errorf("expected 3 scrolls (maxScrolls), got %d", sim.scrolls)
+	}
+}
+
+func TestScrollUntilVisibleRejectsVisibilityPercentageOutOfRange(t *testing.T) {
+	for _, pct := range []int{-1, 101} {
+		sim := &scrollSim{x: 50, y: 400, w: 100, h: 50, efficiency: 1}
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: pct})
+		if result.Success {
+			t.Errorf("pct %d: expected failure", pct)
+		}
+		if sim.scrolls != 0 {
+			t.Errorf("pct %d: expected no scrolling, got %d", pct, sim.scrolls)
+		}
+	}
+}
+
+// centerElement leaves the element's center within centerTolerance of the
+// screen's along the scroll axis, by drags that start at the screen center
+// and travel the measured offset.
+func TestScrollUntilVisibleCenterElement(t *testing.T) {
+	cases := []struct {
+		name       string
+		sim        scrollSim
+		direction  string
+		wantDrags  int
+		wantScroll int
+	}{
+		// Screen center y=422; tolerance 84.4pt vertically, 39pt horizontally.
+		{"already centered", scrollSim{x: 50, y: 400, w: 100, h: 50}, "down", 0, 0},
+		{"just inside tolerance below", scrollSim{x: 50, y: 481, w: 100, h: 50}, "down", 0, 0},
+		{"just outside tolerance below", scrollSim{x: 50, y: 482, w: 100, h: 50}, "down", 1, 0},
+		{"near the bottom edge", scrollSim{x: 50, y: 780, w: 100, h: 50}, "down", 1, 0},
+		{"near the top edge, content scrolled", scrollSim{x: 50, y: 520, w: 100, h: 50, offset: 500}, "up", 1, 0},
+		{"off screen, found by scrolling", scrollSim{x: 50, y: 1000, w: 100, h: 50}, "down", 1, 1},
+		{"lagging scroll view converges", scrollSim{x: 50, y: 780, w: 100, h: 50, efficiency: 0.5}, "down", 3, 0},
+		{"horizontal", scrollSim{x: 300, y: 400, w: 60, h: 50, horizontal: true}, "right", 1, 0},
+	}
+	for _, c := range cases {
+		sim := c.sim
+		sim.maxOffset = 10000
+		if sim.efficiency == 0 {
+			sim.efficiency = 1
+		}
+		result := runScrollSim(t, &sim, &flow.ScrollUntilVisibleStep{Direction: c.direction, CenterElement: true})
+		if !result.Success {
+			t.Errorf("%s: expected success, got %s", c.name, result.Message)
+			continue
+		}
+		if len(sim.centeringDrags) != c.wantDrags {
+			t.Errorf("%s: expected %d centering drags, got %d", c.name, c.wantDrags, len(sim.centeringDrags))
+		}
+		if sim.scrolls != c.wantScroll {
+			t.Errorf("%s: expected %d scrolls, got %d", c.name, c.wantScroll, sim.scrolls)
+		}
+		x, y := sim.bounds()
+		center, screenCenter, extent := y+sim.h/2, 422.0, 844.0
+		if sim.horizontal {
+			center, screenCenter, extent = x+sim.w/2, 195.0, 390.0
+		}
+		if math.Abs(center-screenCenter) > extent*centerTolerance {
+			t.Errorf("%s: element center %.0f not within tolerance of %.0f", c.name, center, screenCenter)
+		}
+		for i, d := range sim.centeringDrags {
+			if d["fromX"] != 195 || d["fromY"] != 422 {
+				t.Errorf("%s: drag %d starts at (%v,%v), want the screen center", c.name, i, d["fromX"], d["fromY"])
+			}
+			if d["pressDuration"] != 0 || d["holdDuration"] <= 0 {
+				t.Errorf("%s: drag %d press %v hold %v: want no press (a long press starts row drags) and a hold (no fling)",
+					c.name, i, d["pressDuration"], d["holdDuration"])
+			}
+		}
+	}
+}
+
+// An element at the end of its scroll range cannot reach the center; the
+// step fails, naming why, instead of passing with the element off-center.
+func TestScrollUntilVisibleCenterElementFailsAtScrollEnd(t *testing.T) {
+	cases := []struct {
+		name      string
+		sim       scrollSim
+		wantDrags int
+	}{
+		{"no room at all", scrollSim{x: 50, y: 780, w: 100, h: 50, maxOffset: 0}, 1},
+		{"room for part of the way", scrollSim{x: 50, y: 780, w: 100, h: 50, maxOffset: 100}, 2},
+	}
+	for _, c := range cases {
+		sim := c.sim
+		sim.efficiency = 1
+		result := runScrollSim(t, &sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true})
+		if result.Success {
+			t.Errorf("%s: expected failure", c.name)
+			continue
+		}
+		if !strings.Contains(result.Error.Error(), "end of its scroll range") {
+			t.Errorf("%s: error should name the scroll-range end, got %v", c.name, result.Error)
+		}
+		if len(sim.centeringDrags) != c.wantDrags {
+			t.Errorf("%s: expected %d centering drags, got %d", c.name, c.wantDrags, len(sim.centeringDrags))
+		}
+	}
+}
+
+// Centering that keeps moving but never arrives stops after maxCenterDrags.
+func TestScrollUntilVisibleCenterElementBoundsDrags(t *testing.T) {
+	sim := &scrollSim{x: 50, y: 780, w: 100, h: 50, maxOffset: 10000, efficiency: 0.05}
+	result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true})
+	if result.Success {
+		t.Fatal("expected failure: each drag moves the content only 5% of the way")
+	}
+	if len(sim.centeringDrags) != maxCenterDrags {
+		t.Errorf("expected %d centering drags, got %d", maxCenterDrags, len(sim.centeringDrags))
+	}
+}
+
+// With both options, the percentage is checked once the element is centered.
+func TestScrollUntilVisibleCenterElementThenVisibilityPercentage(t *testing.T) {
+	cases := []struct {
+		name string
+		h    float64
+		pct  int
+		want bool
+	}{
+		{"fits the screen", 50, 100, true},
+		{"taller than the screen, 100% asked", 1200, 100, false},
+		{"taller than the screen, 70% asked", 1200, 70, true},
+	}
+	for _, c := range cases {
+		// Centered element of height h: its center at y=422.
+		sim := &scrollSim{x: 50, y: 422 - c.h/2, w: 100, h: c.h, maxOffset: 10000, efficiency: 1}
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true, VisibilityPercentage: c.pct})
+		if result.Success != c.want {
+			t.Errorf("%s: success=%v, want %v (%s)", c.name, result.Success, c.want, result.Message)
+		}
 	}
 }

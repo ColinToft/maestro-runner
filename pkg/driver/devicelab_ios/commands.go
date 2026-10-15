@@ -529,6 +529,9 @@ func (d *Driver) handleScroll(s *flow.ScrollStep) *core.CommandResult {
 // handleScrollUntilVisible scrolls in the chosen direction until the
 // target element appears or the budget runs out.
 func (d *Driver) handleScrollUntilVisible(s *flow.ScrollUntilVisibleStep) *core.CommandResult {
+	if err := s.RequirePlacementUnsupported(); err != nil {
+		return core.ErrorResult(err, "Unsupported scrollUntilVisible option")
+	}
 	direction := strings.ToLower(s.Direction)
 	if direction == "" {
 		direction = "down"

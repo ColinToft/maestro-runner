@@ -603,6 +603,9 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 // the right primitive: it scrolls every ancestor scroll container in every
 // frame up the chain. Issues #71/#72 acting layer.
 func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.CommandResult {
+	if err := step.RequirePlacementUnsupported(); err != nil {
+		return errorResult(err, "Unsupported scrollUntilVisible option")
+	}
 	dir := strings.ToLower(step.Direction)
 	if dir == "" {
 		dir = "down"

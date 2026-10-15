@@ -421,6 +421,9 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 }
 
 func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.CommandResult {
+	if err := step.RequirePlacementUnsupported(); err != nil {
+		return errorResult(err, "Unsupported scrollUntilVisible option")
+	}
 	direction := strings.ToLower(step.Direction)
 	if direction == "" {
 		direction = "down"

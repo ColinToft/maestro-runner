@@ -1,7 +1,11 @@
 // Package flow handles parsing and representation of Maestro YAML flow files.
 package flow
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 // StepType represents the type of step.
 type StepType string
@@ -248,6 +252,16 @@ type ScrollUntilVisibleStep struct {
 	WaitToSettleTimeoutMs int      `yaml:"waitToSettleTimeoutMs"`
 	// Engine selects the scroll backend. See ScrollStep.Engine.
 	Engine string `yaml:"engine"`
+}
+
+// RequirePlacementUnsupported fails a step that sets visibilityPercentage or
+// centerElement, for drivers that do not implement them: a flow relying on
+// either must not pass on a driver that ignores it.
+func (s *ScrollUntilVisibleStep) RequirePlacementUnsupported() error {
+	if s.VisibilityPercentage != 0 || s.CenterElement {
+		return fmt.Errorf("scrollUntilVisible: visibilityPercentage and centerElement are implemented only by the iOS WDA driver")
+	}
+	return nil
 }
 
 // BackStep presses back.

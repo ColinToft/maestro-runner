@@ -879,3 +879,22 @@ func TestStepTypeConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestScrollUntilVisibleRequirePlacementUnsupported(t *testing.T) {
+	cases := []struct {
+		step    ScrollUntilVisibleStep
+		wantErr bool
+	}{
+		{ScrollUntilVisibleStep{}, false},
+		{ScrollUntilVisibleStep{Direction: "down", MaxScrolls: 5, WaitToSettleTimeoutMs: 400}, false},
+		{ScrollUntilVisibleStep{VisibilityPercentage: 50}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: -1}, true},
+		{ScrollUntilVisibleStep{CenterElement: true}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: 100, CenterElement: true}, true},
+	}
+	for _, c := range cases {
+		if err := c.step.RequirePlacementUnsupported(); (err != nil) != c.wantErr {
+			t.Errorf("%+v: err=%v, wantErr=%v", c.step, err, c.wantErr)
+		}
+	}
+}
