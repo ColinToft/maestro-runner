@@ -6090,3 +6090,102 @@ func TestStabilizeFrameKeepsRelativeConstraint(t *testing.T) {
 		t.Fatalf("stabilizeFrame moved the tap to y=%d (the swipe action above the anchor), want 400", settled.Bounds.Y)
 	}
 }
+
+// mockWDAServerElementVanishing serves a WDA whose element query still
+// matches "sheet-control" while the given per-element attribute reads answer
+// WDA's 404 "no such element" — the element left the tree after the query
+// matched it. The page source never contains it.
+func mockWDAServerElementVanishing(failing map[string]bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/source"):
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+			})
+		case strings.Contains(path, "/window/size"):
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+		case strings.HasSuffix(path, "/element") && r.Method == http.MethodPost:
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"ELEMENT": "E1"},
+			})
+		case strings.Contains(path, "/element/E1/"):
+			attr := path[strings.LastIndex(path, "/")+1:]
+			if failing[attr] {
+				w.WriteHeader(http.StatusNotFound)
+				jsonResponse(w, map[string]interface{}{
+					"value": map[string]interface{}{
+						"error":   "no such element",
+						"message": "The element is not attached to the DOM",
+					},
+				})
+				return
+			}
+			switch attr {
+			case "displayed":
+				jsonResponse(w, map[string]interface{}{"value": true})
+			case "rect":
+				jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{
+					"x": 10.0, "y": 100.0, "width": 50.0, "height": 50.0,
+				}})
+			default:
+				jsonResponse(w, map[string]interface{}{"value": "sheet-control"})
+			}
+		default:
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		}
+	}))
+}
+
+// An element is found only if its displayed state was read: one whose
+// `displayed` read fails is gone, whatever its other reads answered, so
+// `notVisible` passes and `visible` keeps waiting. A readable element is
+// found even when its other reads fail.
+func TestElementFoundOnlyWhenItsDisplayedStateIsRead(t *testing.T) {
+	cases := []struct {
+		name    string
+		failing map[string]bool
+		found   bool
+	}{
+		{"every read 404s", map[string]bool{"displayed": true, "rect": true, "text": true, "name": true}, false},
+		{"only displayed 404s", map[string]bool{"displayed": true}, false},
+		{"displayed 404s, rect readable", map[string]bool{"displayed": true, "text": true, "name": true}, false},
+		{"all reads succeed", map[string]bool{}, true},
+		{"displayed read, others 404", map[string]bool{"rect": true, "text": true, "name": true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := mockWDAServerElementVanishing(tc.failing)
+			defer server.Close()
+			driver := createTestDriver(server)
+			sel := flow.Selector{ID: "sheet-control"}
+
+			info, err := driver.findElementOnce(sel)
+			if found := err == nil && info != nil; found != tc.found {
+				t.Fatalf("findElementOnce found=%v, want %v (err: %v)", found, tc.found, err)
+			}
+
+			notVisible := driver.waitUntil(&flow.WaitUntilStep{
+				NotVisible: &sel,
+				BaseStep:   flow.BaseStep{TimeoutMs: 300},
+			})
+			if notVisible.Success == tc.found {
+				t.Errorf("notVisible success=%v, want %v: %s", notVisible.Success, !tc.found, notVisible.Message)
+			}
+			visible := driver.waitUntil(&flow.WaitUntilStep{
+				Visible:  &sel,
+				BaseStep: flow.BaseStep{TimeoutMs: 300},
+			})
+			if visible.Success != tc.found {
+				t.Errorf("visible success=%v, want %v: %s", visible.Success, tc.found, visible.Message)
+			}
+		})
+	}
+}

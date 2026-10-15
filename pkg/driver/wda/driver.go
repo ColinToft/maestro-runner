@@ -1027,6 +1027,13 @@ func (d *Driver) getElementInfo(elemID string) (*core.ElementInfo, error) {
 	}()
 	wg.Wait()
 
+	// An element whose displayed state can't be read is not found: WDA
+	// answers 404 for one that left the tree after the query matched it
+	// (a sheet closing mid-poll), and reporting that as found made
+	// `notVisible` read a vanished element as visible until its deadline.
+	if dispErr != nil {
+		return nil, fmt.Errorf("element vanished before its state could be read: %w", dispErr)
+	}
 	if textErr == nil {
 		info.Text = text
 	}
@@ -1036,9 +1043,9 @@ func (d *Driver) getElementInfo(elemID string) (*core.ElementInfo, error) {
 	if nameErr == nil {
 		info.Class = elemName
 	}
-	info.Visible = dispErr == nil && displayed
+	info.Visible = displayed
 
-	if dispErr == nil && !displayed {
+	if !displayed {
 		// XCUITest says off-screen. Check bounds geometrically — if they're
 		// inside the viewport, override XCUITest and accept the element with
 		// a MatchNote so the report records the override.
