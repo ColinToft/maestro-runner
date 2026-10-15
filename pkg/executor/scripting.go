@@ -572,6 +572,9 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 		if s.Selector != nil {
 			s.Selector = se.expandSelector(s.Selector)
 		}
+		if s.To != nil {
+			s.To = se.expandSelector(s.To)
+		}
 		s.Direction = se.ExpandVariables(s.Direction)
 		s.Start = se.ExpandVariables(s.Start)
 		s.End = se.ExpandVariables(s.End)

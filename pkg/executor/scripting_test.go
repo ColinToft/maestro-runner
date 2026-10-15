@@ -1038,6 +1038,53 @@ func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
 	}
 }
 
+// An element-to-element swipe expands both ends: a drag between rows whose
+// ids carry ${output.x} must resolve `from:` and `to:` alike.
+func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	se.SetVariable("FROM", "row-a")
+	se.SetVariable("TO", "row-b")
+
+	from := &flow.Selector{ID: "^${FROM}$"}
+	step := &flow.SwipeStep{
+		Selector: from,
+		From:     from,
+		To:       &flow.Selector{ID: "^${TO}$", Text: "${TO}"},
+	}
+
+	se.ExpandStep(step)
+
+	if step.Selector.ID != "^row-a$" {
+		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "^row-a$")
+	}
+	if step.To.ID != "^row-b$" {
+		t.Errorf("To.ID = %q, want %q", step.To.ID, "^row-b$")
+	}
+	if step.To.Text != "row-b" {
+		t.Errorf("To.Text = %q, want %q", step.To.Text, "row-b")
+	}
+}
+
+func TestScriptEngine_ExpandStep_SwipeWithoutTo(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	se.SetVariable("S", "50%, 80%")
+
+	step := &flow.SwipeStep{Start: "${S}", End: "50%, 20%"}
+
+	se.ExpandStep(step)
+
+	if step.To != nil {
+		t.Errorf("To = %+v, want nil", step.To)
+	}
+	if step.Start != "50%, 80%" {
+		t.Errorf("Start = %q, want %q", step.Start, "50%, 80%")
+	}
+}
+
 func TestScriptEngine_ExpandStep_TapOnStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
