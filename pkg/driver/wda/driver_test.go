@@ -3,6 +3,8 @@ package wda
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -6088,5 +6090,134 @@ func TestStabilizeFrameKeepsRelativeConstraint(t *testing.T) {
 	}
 	if settled.Bounds.Y != 400 {
 		t.Fatalf("stabilizeFrame moved the tap to y=%d (the swipe action above the anchor), want 400", settled.Bounds.Y)
+	}
+}
+
+// mockWDAServerElementVanishing serves a WDA whose element query still
+// matches "sheet-control" while each listed attribute read answers with the
+// given W3C error code. The page source never contains the element.
+func mockWDAServerElementVanishing(failing map[string]string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/source"):
+			jsonResponse(w, map[string]interface{}{
+				"value": `<?xml version="1.0" encoding="UTF-8"?>
+<AppiumAUT>
+  <XCUIElementTypeApplication type="XCUIElementTypeApplication" name="TestApp" enabled="true" visible="true" x="0" y="0" width="390" height="844">
+  </XCUIElementTypeApplication>
+</AppiumAUT>`,
+			})
+		case strings.Contains(path, "/window/size"):
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"width": 390.0, "height": 844.0},
+			})
+		case strings.HasSuffix(path, "/element") && r.Method == http.MethodPost:
+			jsonResponse(w, map[string]interface{}{
+				"value": map[string]interface{}{"ELEMENT": "E1"},
+			})
+		case strings.Contains(path, "/element/E1/"):
+			attr := path[strings.LastIndex(path, "/")+1:]
+			if code, ok := failing[attr]; ok {
+				status := http.StatusNotFound
+				if code == "unknown error" {
+					status = http.StatusInternalServerError
+				}
+				w.WriteHeader(status)
+				jsonResponse(w, map[string]interface{}{
+					"value": map[string]interface{}{"error": code, "message": code},
+				})
+				return
+			}
+			switch attr {
+			case "displayed":
+				jsonResponse(w, map[string]interface{}{"value": true})
+			case "rect":
+				jsonResponse(w, map[string]interface{}{"value": map[string]interface{}{
+					"x": 10.0, "y": 100.0, "width": 50.0, "height": 50.0,
+				}})
+			default:
+				jsonResponse(w, map[string]interface{}{"value": "sheet-control"})
+			}
+		default:
+			jsonResponse(w, map[string]interface{}{"status": 0})
+		}
+	}))
+}
+
+// An element is gone when ANY attribute read answers that it no longer
+// exists ("no such element" / "stale element reference"), whichever read
+// finishes first; any other read failure says nothing about whether it
+// exists, so it stays found. Holds on both findElementOnce orderings.
+func TestElementGoneWhenAnyReadSaysItLeftTheTree(t *testing.T) {
+	const gone, stale, unknown = "no such element", "stale element reference", "unknown error"
+	cases := []struct {
+		name    string
+		failing map[string]string
+		found   bool
+	}{
+		{"every read gone", map[string]string{"displayed": gone, "rect": gone, "text": gone, "name": gone}, false},
+		{"only displayed gone", map[string]string{"displayed": gone}, false},
+		{"displayed read, others gone", map[string]string{"rect": gone, "text": gone, "name": gone}, false},
+		{"only rect stale", map[string]string{"rect": stale}, false},
+		{"only name gone", map[string]string{"name": gone}, false},
+		{"displayed unknown error, others gone", map[string]string{"displayed": unknown, "text": gone}, false},
+		{"all reads succeed", map[string]string{}, true},
+		{"displayed unknown error", map[string]string{"displayed": unknown}, true},
+		{"every read unknown error", map[string]string{"displayed": unknown, "rect": unknown, "text": unknown, "name": unknown}, true},
+	}
+	for _, pageSourceFirst := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("pageSourceFirst=%v/%s", pageSourceFirst, tc.name), func(t *testing.T) {
+				server := mockWDAServerElementVanishing(tc.failing)
+				defer server.Close()
+				driver := createTestDriver(server)
+				if pageSourceFirst {
+					driver.wdaRescues = wdaMissFlipThreshold
+				}
+				if driver.pageSourceFirst() != pageSourceFirst {
+					t.Fatalf("pageSourceFirst()=%v, want %v", driver.pageSourceFirst(), pageSourceFirst)
+				}
+				sel := flow.Selector{ID: "sheet-control"}
+
+				info, err := driver.findElementOnce(sel)
+				if found := err == nil && info != nil; found != tc.found {
+					t.Fatalf("findElementOnce found=%v, want %v (err: %v)", found, tc.found, err)
+				}
+				if tc.found {
+					return
+				}
+				// A gone element ends a notVisible wait on its first poll.
+				result := driver.waitUntil(&flow.WaitUntilStep{
+					NotVisible: &sel,
+					BaseStep:   flow.BaseStep{TimeoutMs: 2000},
+				})
+				if !result.Success {
+					t.Errorf("notVisible failed: %s", result.Message)
+				}
+			})
+		}
+	}
+}
+
+// isElementGone classifies by WDA's error code alone.
+func TestIsElementGone(t *testing.T) {
+	cases := []struct {
+		err  error
+		gone bool
+	}{
+		{&wdaError{Code: "no such element"}, true},
+		{&wdaError{Code: "stale element reference"}, true},
+		{fmt.Errorf("wrapped: %w", &wdaError{Code: "no such element"}), true},
+		{&wdaError{Code: "unknown error", Message: "no such element"}, false},
+		{&wdaError{Code: "timeout"}, false},
+		{errors.New("WDA error: no such element"), false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		if got := isElementGone(tc.err); got != tc.gone {
+			t.Errorf("isElementGone(%v)=%v, want %v", tc.err, got, tc.gone)
+		}
 	}
 }
