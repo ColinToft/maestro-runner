@@ -1027,6 +1027,14 @@ func (d *Driver) getElementInfo(elemID string) (*core.ElementInfo, error) {
 	}()
 	wg.Wait()
 
+	// An element any read says is gone is not found: it left the tree after
+	// the query matched it (a sheet closing mid-poll). Reporting it found
+	// made `notVisible` wait out its deadline on a vanished element.
+	for _, err := range []error{dispErr, rectErr, textErr, nameErr} {
+		if isElementGone(err) {
+			return nil, fmt.Errorf("element left the tree after it matched: %w", err)
+		}
+	}
 	if textErr == nil {
 		info.Text = text
 	}

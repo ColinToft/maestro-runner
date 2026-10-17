@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -506,10 +507,11 @@ func (c *Client) ElementDisplayed(elementID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if value, ok := resp["value"].(bool); ok {
-		return value, nil
+	value, ok := resp["value"].(bool)
+	if !ok {
+		return false, fmt.Errorf("WDA displayed: value is not a bool: %v", resp["value"])
 	}
-	return false, nil
+	return value, nil
 }
 
 // ElementRect returns an element's bounds.
@@ -652,6 +654,25 @@ func (c *Client) delete(path string) (map[string]interface{}, error) {
 	return c.parseResponse(resp)
 }
 
+// wdaError is an error WDA reported in its response body, keeping the W3C
+// error code ("no such element", "stale element reference", ...).
+type wdaError struct {
+	Code    string
+	Message string
+}
+
+func (e *wdaError) Error() string { return "WDA error: " + e.Message }
+
+// isElementGone reports whether WDA answered that the element no longer
+// exists: it left the tree after a query matched it.
+func isElementGone(err error) bool {
+	var we *wdaError
+	if !errors.As(err, &we) {
+		return false
+	}
+	return we.Code == "no such element" || we.Code == "stale element reference"
+}
+
 func (c *Client) parseResponse(resp *http.Response) (map[string]interface{}, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -665,12 +686,12 @@ func (c *Client) parseResponse(resp *http.Response) (map[string]interface{}, err
 
 	// Check for WDA error
 	if value, ok := result["value"].(map[string]interface{}); ok {
-		if errMsg, ok := value["error"].(string); ok {
-			message := errMsg
+		if code, ok := value["error"].(string); ok {
+			message := code
 			if msg, ok := value["message"].(string); ok {
 				message = msg
 			}
-			return nil, fmt.Errorf("WDA error: %s", message)
+			return nil, &wdaError{Code: code, Message: message}
 		}
 	}
 
