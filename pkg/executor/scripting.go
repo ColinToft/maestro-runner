@@ -363,7 +363,7 @@ func (se *ScriptEngine) ExecuteAssertTrue(step *flow.AssertTrueStep) *core.Comma
 
 // ExecuteAssertCondition handles assertCondition step.
 func (se *ScriptEngine) ExecuteAssertCondition(ctx context.Context, step *flow.AssertConditionStep, driver core.Driver) *core.CommandResult {
-	cond := step.Condition
+	cond := se.expandCondition(step.Condition)
 
 	// Check platform condition
 	if cond.Platform != "" {
@@ -432,6 +432,7 @@ func (se *ScriptEngine) ExecuteAssertCondition(ctx context.Context, step *flow.A
 
 // CheckCondition evaluates a flow.Condition and returns true if met.
 func (se *ScriptEngine) CheckCondition(ctx context.Context, cond flow.Condition, driver core.Driver) bool {
+	cond = se.expandCondition(cond)
 	// Check platform (first — no device call needed)
 	if cond.Platform != "" {
 		if info := driver.GetPlatformInfo(); info != nil {
@@ -536,12 +537,14 @@ func (se *ScriptEngine) ParseInt(s string, defaultVal int) int {
 	return defaultVal
 }
 
-// ExpandStep expands variables in all string fields of a step.
-// Note: This modifies the step in place. For steps used in loops,
-// the parser creates fresh instances each iteration.
-func (se *ScriptEngine) ExpandStep(step flow.Step) {
-	// flow.ExtractSelectors is the one list of a step's selectors.
-	for _, sel := range flow.ExtractSelectors(step) {
+// Expand returns a copy of step with variables expanded in all its string
+// fields except its conditions, which are expanded where they are evaluated
+// (see flow.Conditions). step itself is never changed: it is the parsed
+// template that every execution of it, such as each repeat iteration,
+// expands afresh.
+func (se *ScriptEngine) Expand(step flow.Step) flow.Step {
+	step = flow.CloneStep(step)
+	for _, sel := range flow.StepSelectors(step) {
 		*sel = *se.expandSelector(sel)
 	}
 	switch s := step.(type) {
@@ -580,18 +583,20 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 	case *flow.RunFlowStep:
 		s.File = se.ExpandVariables(s.File)
 		s.ElseFile = se.ExpandVariables(s.ElseFile)
-		if s.When != nil {
-			if s.When.Script != "" {
-				s.When.Script = se.ExpandVariables(s.When.Script)
-			}
-			if s.When.Platform != "" {
-				s.When.Platform = se.ExpandVariables(s.When.Platform)
-			}
-		}
 		for k, v := range s.Env {
 			s.Env[k] = se.ExpandVariables(v)
 		}
 	}
+	return step
+}
+
+// expandCondition returns cond expanded, at the moment it is evaluated. Its
+// script needs none: EvalCondition evaluates it afresh.
+func (se *ScriptEngine) expandCondition(cond flow.Condition) flow.Condition {
+	cond.Visible = se.expandSelector(cond.Visible)
+	cond.NotVisible = se.expandSelector(cond.NotVisible)
+	cond.Platform = se.ExpandVariables(cond.Platform)
+	return cond
 }
 
 // expandSelector expands variables in selector fields and returns a copy.

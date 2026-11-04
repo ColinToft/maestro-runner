@@ -36,6 +36,8 @@ type FlowRunner struct {
 	waitForIdleTimeout int
 	// Active runFlow timeout label (e.g. "3s") for enriching sub-step errors
 	runFlowTimeout string
+	// The appId, unexpanded, of the innermost flow that names one
+	appID string
 }
 
 // Run executes the flow and returns the result.
@@ -79,8 +81,9 @@ func (fr *FlowRunner) Run() FlowResult {
 		expanded := fr.script.ExpandVariables(fr.flow.Config.AppID)
 		fr.flow.Config.AppID = expanded
 	}
-	if appID := fr.flow.Config.EffectiveAppID(); appID != "" {
-		fr.script.SetVariable("APP_ID", appID)
+	fr.appID = fr.flow.Config.EffectiveAppID()
+	if fr.appID != "" {
+		fr.script.SetVariable("APP_ID", fr.appID)
 	}
 	// Expand flow config env values to support ${VAR || "default"} syntax
 	for k, v := range fr.flow.Config.Env {
@@ -129,10 +132,7 @@ func (fr *FlowRunner) Run() FlowResult {
 		preparer.PrepareForFlow(fr.flow.Steps)
 	}
 	if ensurer, ok := innerDriver.(core.SessionEnsurer); ok {
-		// Expand ${VAR} placeholders in top-level appId so CLI -e variables
-		// substitute correctly (the YAML's appId field doesn't go through
-		// ExpandStep — that runs on step selectors, not flow config).
-		appID := fr.script.ExpandVariables(fr.flow.Config.EffectiveAppID())
+		appID := fr.defaultAppID()
 		if appID != "" {
 			if err := ensurer.EnsureSession(appID); err != nil {
 				logger.Warn("failed to ensure session: %v", err)
@@ -330,8 +330,9 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 		artifacts = fr.captureArtifacts(idx, "before")
 	}
 
-	// Expand variables in step before execution
-	fr.script.ExpandStep(step)
+	// Execute an expanded copy; step stays the template (see ScriptEngine.Expand).
+	step = fr.script.Expand(step)
+	fr.applyDefaultAppID(step)
 
 	// Execute step - route to appropriate handler
 	var result *core.CommandResult
@@ -361,35 +362,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 		fr.subCommands = nil
 		result = fr.executeRunFlow(s)
 
-	// App lifecycle steps - inject flow's appId/url if not specified.
-	// ExpandStep above runs BEFORE the config copy, so any ${VAR} in the
-	// flow's top-level `appId:` would otherwise leak through unexpanded.
-	// Re-expand after the copy so CLI -e variables substitute correctly.
-	case *flow.LaunchAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		s.AppID = fr.script.ExpandVariables(s.AppID)
-		result = fr.driver.Execute(step)
-	case *flow.StopAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		s.AppID = fr.script.ExpandVariables(s.AppID)
-		result = fr.driver.Execute(step)
-	case *flow.KillAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		s.AppID = fr.script.ExpandVariables(s.AppID)
-		result = fr.driver.Execute(step)
-	case *flow.ClearStateStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		s.AppID = fr.script.ExpandVariables(s.AppID)
-		result = fr.driver.Execute(step)
-
 	// EvalBrowserScript - execute JS in browser, store output variable
 	case *flow.EvalBrowserScriptStep:
 		result = fr.driver.Execute(step)
@@ -401,7 +373,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 
 	// RunBrowserScript - execute JS file in browser, store output variable
 	case *flow.RunBrowserScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -411,7 +382,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 
 	// EvalWebViewScript - execute JS in mobile WebView, store output variable
 	case *flow.EvalWebViewScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -421,7 +391,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 
 	// RunWebViewScript - execute JS file in mobile WebView, store output variable
 	case *flow.RunWebViewScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -458,7 +427,6 @@ func (fr *FlowRunner) executeStep(idx int, step flow.Step) (report.Status, strin
 
 	// CopyTextFrom - delegate to driver and sync copied text to script engine
 	case *flow.CopyTextFromStep:
-		fr.script.ExpandStep(step) // Expand variables in selector
 		result = fr.driver.Execute(step)
 		if result.Success && result.Data != nil {
 			if text, ok := result.Data.(string); ok {
@@ -915,8 +883,37 @@ func (fr *FlowRunner) enrichTimeoutError(result *core.CommandResult) *core.Comma
 	return &enriched
 }
 
+// defaultAppID is the innermost flow's appId, expanded, for a step that names
+// none.
+func (fr *FlowRunner) defaultAppID() string {
+	return fr.script.ExpandVariables(fr.appID)
+}
+
+// applyDefaultAppID gives an app lifecycle step that names no app the
+// defaultAppID. step must be an expanded copy, never the parsed template.
+func (fr *FlowRunner) applyDefaultAppID(step flow.Step) {
+	var appID *string
+	switch s := step.(type) {
+	case *flow.LaunchAppStep:
+		appID = &s.AppID
+	case *flow.StopAppStep:
+		appID = &s.AppID
+	case *flow.KillAppStep:
+		appID = &s.AppID
+	case *flow.ClearStateStep:
+		appID = &s.AppID
+	default:
+		return
+	}
+	if *appID == "" {
+		*appID = fr.defaultAppID()
+	}
+}
+
 // executeNestedStep executes a step without report tracking (for nested execution).
 func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
+	step = fr.script.Expand(step)
+	fr.applyDefaultAppID(step)
 	start := time.Now()
 	var result *core.CommandResult
 
@@ -951,38 +948,9 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	case *flow.RetryStep:
 		result = fr.executeRetry(s)
 	case *flow.RunFlowStep:
-		fr.script.ExpandStep(step)
 		result = fr.executeRunFlow(s)
 
-	// App lifecycle steps - inject flow's appId if not specified.
-	// Mirrors executeStep so hooks (onFlowStart/onFlowComplete) and other nested
-	// invocations resolve the default appId the same way as top-level steps.
-	case *flow.LaunchAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		fr.script.ExpandStep(step)
-		result = fr.driver.Execute(step)
-	case *flow.StopAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		fr.script.ExpandStep(step)
-		result = fr.driver.Execute(step)
-	case *flow.KillAppStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		fr.script.ExpandStep(step)
-		result = fr.driver.Execute(step)
-	case *flow.ClearStateStep:
-		if s.AppID == "" {
-			s.AppID = fr.flow.Config.EffectiveAppID()
-		}
-		fr.script.ExpandStep(step)
-		result = fr.driver.Execute(step)
 	case *flow.TakeScreenshotStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success {
 			if data, ok := result.Data.([]byte); ok && len(data) > 0 {
@@ -996,7 +964,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.EvalBrowserScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1004,7 +971,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.RunBrowserScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1012,7 +978,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.EvalWebViewScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1020,7 +985,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.RunWebViewScriptStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1028,7 +992,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.GetConsoleLogsStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1036,7 +999,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.GetCookiesStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1044,7 +1006,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.WaitForRequestStep:
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		if result.Success && s.Output != "" {
 			if val, ok := result.Data.(string); ok {
@@ -1052,8 +1013,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.CopyTextFromStep:
-		// Expand variables before driver execution
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 		// Sync copied text to script engine
 		if result.Success && result.Data != nil {
@@ -1062,13 +1021,10 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			}
 		}
 	case *flow.TapOnStep, *flow.DoubleTapOnStep, *flow.LongPressOnStep:
-		fr.script.ExpandStep(step)
 		opts, _ := extractTapOptions(step)
 		result = fr.executeTapWithOptions(step, opts)
 
 	default:
-		// Expand variables before driver execution
-		fr.script.ExpandStep(step)
 		result = fr.driver.Execute(step)
 	}
 
@@ -1143,6 +1099,13 @@ func (fr *FlowRunner) executeSubFlow(subFlow flow.Flow) *core.CommandResult {
 	}
 	defer func() { fr.script.flowDir = prevDir }()
 
+	// Its steps default to its appId, when it names one.
+	if appID := subFlow.Config.EffectiveAppID(); appID != "" {
+		prevAppID := fr.appID
+		fr.appID = appID
+		defer func() { fr.appID = prevAppID }()
+	}
+
 	// Apply sub-flow env
 	defer fr.script.withEnvVars(subFlow.Config.Env)()
 
@@ -1161,26 +1124,6 @@ func (fr *FlowRunner) executeSubFlow(subFlow flow.Flow) *core.CommandResult {
 			}
 		}
 		lastStepDesc = step.Describe()
-
-		// Inject subflow's appId/url into app lifecycle steps (same as executeStep does for main flow)
-		switch s := step.(type) {
-		case *flow.LaunchAppStep:
-			if s.AppID == "" {
-				s.AppID = subFlow.Config.EffectiveAppID()
-			}
-		case *flow.StopAppStep:
-			if s.AppID == "" {
-				s.AppID = subFlow.Config.EffectiveAppID()
-			}
-		case *flow.KillAppStep:
-			if s.AppID == "" {
-				s.AppID = subFlow.Config.EffectiveAppID()
-			}
-		case *flow.ClearStateStep:
-			if s.AppID == "" {
-				s.AppID = subFlow.Config.EffectiveAppID()
-			}
-		}
 
 		result := fr.executeNestedStep(step)
 		if !result.Success && !step.IsOptional() {

@@ -405,11 +405,11 @@ func CheckUnsupportedFields(sel *Selector, platform string) []string {
 	return unsupported
 }
 
-// ExtractSelectors returns every selector a step carries, the one list that
-// variable expansion and the unsupported-selector warning both read. Relative
-// selectors nested inside them are left to the reader. Returns nil for steps
-// without selectors.
-func ExtractSelectors(step Step) []*Selector {
+// StepSelectors returns the selectors a step reads when it runs, which
+// variable expansion expands with the step. Its conditions' selectors are
+// not among them: see Conditions. Relative selectors nested inside them are
+// left to the reader.
+func StepSelectors(step Step) []*Selector {
 	var selectors []*Selector
 
 	addSel := func(s *Selector) {
@@ -440,9 +440,6 @@ func ExtractSelectors(step Step) []*Selector {
 		addSel(&s.Selector)
 	case *AssertNotVisibleStep:
 		addSel(&s.Selector)
-	case *AssertConditionStep:
-		addSel(s.Condition.Visible)
-		addSel(s.Condition.NotVisible)
 	case *WaitUntilStep:
 		addSel(s.Visible)
 		addSel(s.NotVisible)
@@ -450,12 +447,38 @@ func ExtractSelectors(step Step) []*Selector {
 		addSel(&s.Selector)
 	case *TakeScreenshotStep:
 		addSel(s.CropOn)
-	case *RunFlowStep:
-		if s.When != nil {
-			addSel(s.When.Visible)
-			addSel(s.When.NotVisible)
-		}
 	}
 
+	return selectors
+}
+
+// Conditions returns a step's conditions. Their selectors are expanded where
+// the condition is evaluated, not with the step: a repeat's while is
+// evaluated afresh on every iteration.
+func Conditions(step Step) []*Condition {
+	switch s := step.(type) {
+	case *AssertConditionStep:
+		return []*Condition{&s.Condition}
+	case *RunFlowStep:
+		if s.When != nil {
+			return []*Condition{s.When}
+		}
+	case *RepeatStep:
+		return []*Condition{&s.While}
+	}
+	return nil
+}
+
+// ExtractSelectors returns every selector a step carries, its StepSelectors
+// and its conditions', for the unsupported-selector warning.
+func ExtractSelectors(step Step) []*Selector {
+	selectors := StepSelectors(step)
+	for _, cond := range Conditions(step) {
+		for _, sel := range []*Selector{cond.Visible, cond.NotVisible} {
+			if sel != nil {
+				selectors = append(selectors, sel)
+			}
+		}
+	}
 	return selectors
 }
