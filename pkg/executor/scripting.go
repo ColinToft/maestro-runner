@@ -602,6 +602,15 @@ func (se *ScriptEngine) expandInPlace(step flow.Step) {
 	}
 }
 
+// expandCondition returns cond with its selectors expanded, for a condition
+// read more than once per execution (a repeat's while), which Expand leaves
+// raw. Its script needs none: EvalCondition evaluates it afresh.
+func (se *ScriptEngine) expandCondition(cond flow.Condition) flow.Condition {
+	cond.Visible = se.expandSelector(cond.Visible)
+	cond.NotVisible = se.expandSelector(cond.NotVisible)
+	return cond
+}
+
 // expandSelector expands variables in selector fields and returns a copy.
 func (se *ScriptEngine) expandSelector(sel *flow.Selector) *flow.Selector {
 	if sel == nil {

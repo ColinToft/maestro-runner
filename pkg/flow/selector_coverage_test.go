@@ -125,7 +125,7 @@ func TestExtractSelectors_CoversEverySelectorField(t *testing.T) {
 	}
 	exempt := map[string]string{
 		"SwipeStep.From":   "the parser folds it into SwipeStep.Selector",
-		"RepeatStep.While": "re-evaluated every iteration, so it must not be expanded once in place",
+		"RepeatStep.While": "executeRepeat expands it at every check, since each iteration may change it",
 	}
 
 	for _, field := range selectorFieldsInStepGo(t) {

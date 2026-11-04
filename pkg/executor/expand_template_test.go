@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -92,5 +93,56 @@ func TestScriptEngine_Expand_LeavesTheTemplate(t *testing.T) {
 	}
 	if first.To.ChildOf.ID != "day-b" || second.To.ChildOf.ID != "day-c" {
 		t.Errorf("to.childOf = %q then %q, want %q then %q", first.To.ChildOf.ID, second.To.ChildOf.ID, "day-b", "day-c")
+	}
+}
+
+// A repeat's while condition is expanded at every check, so it sees the
+// variables its own iterations change.
+func TestRunner_RepeatWhile_ExpandsAtEveryCheck(t *testing.T) {
+	var checked []string
+	taps := 0
+	driver := &mockDriver{
+		executeFunc: func(step flow.Step) *core.CommandResult {
+			switch s := step.(type) {
+			case *flow.AssertVisibleStep:
+				checked = append(checked, s.Selector.ID)
+				return &core.CommandResult{Success: s.Selector.ID != "row-3"}
+			case *flow.TapOnStep:
+				taps++
+			}
+			return &core.CommandResult{Success: true}
+		},
+	}
+	runner := New(driver, RunnerConfig{
+		OutputDir: t.TempDir(),
+		Artifacts: ArtifactNever,
+		Device:    report.Device{ID: "test", Platform: "android"},
+	})
+	flows := []flow.Flow{{
+		SourcePath: "test.yaml",
+		Config:     flow.Config{Name: "Repeat while expansion"},
+		Steps: []flow.Step{
+			&flow.EvalScriptStep{BaseStep: flow.BaseStep{StepType: flow.StepEvalScript}, Script: "${output.i = 1}"},
+			&flow.RepeatStep{
+				BaseStep: flow.BaseStep{StepType: flow.StepRepeat},
+				Times:    "5",
+				While:    flow.Condition{Visible: &flow.Selector{ID: "row-${output.i}"}},
+				Steps: []flow.Step{
+					&flow.TapOnStep{BaseStep: flow.BaseStep{StepType: flow.StepTapOn}, Selector: flow.Selector{ID: "x"}},
+					&flow.EvalScriptStep{BaseStep: flow.BaseStep{StepType: flow.StepEvalScript}, Script: "${output.i = output.i + 1}"},
+				},
+			},
+		},
+	}}
+
+	result, err := runner.Run(context.Background(), flows)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != report.StatusPassed {
+		t.Fatalf("Status = %v, want %v", result.Status, report.StatusPassed)
+	}
+	if want := "[row-1 row-2 row-3]"; fmt.Sprint(checked) != want || taps != 2 {
+		t.Errorf("checked = %v, taps = %d; want %s, 2", checked, taps, want)
 	}
 }

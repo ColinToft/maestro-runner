@@ -406,9 +406,10 @@ func CheckUnsupportedFields(sel *Selector, platform string) []string {
 }
 
 // ExtractSelectors returns every selector a step carries, the one list that
-// variable expansion and the unsupported-selector warning both read. Relative
-// selectors nested inside them are left to the reader. Returns nil for steps
-// without selectors.
+// variable expansion and the unsupported-selector warning both read, except a
+// repeat's while: the executor expands that at each check. Relative selectors
+// nested inside them are left to the reader. Returns nil for steps without
+// selectors.
 func ExtractSelectors(step Step) []*Selector {
 	var selectors []*Selector
 

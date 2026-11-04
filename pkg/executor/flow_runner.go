@@ -581,7 +581,7 @@ func (fr *FlowRunner) executeRepeat(step *flow.RepeatStep) *core.CommandResult {
 
 		// Check while condition
 		if hasWhile {
-			if !fr.script.CheckCondition(fr.ctx, step.While, fr.driver) {
+			if !fr.script.CheckCondition(fr.ctx, fr.script.expandCondition(step.While), fr.driver) {
 				break // Condition no longer met
 			}
 		}
