@@ -536,10 +536,18 @@ func (se *ScriptEngine) ParseInt(s string, defaultVal int) int {
 	return defaultVal
 }
 
-// ExpandStep expands variables in all string fields of a step.
-// Note: This modifies the step in place. For steps used in loops,
-// the parser creates fresh instances each iteration.
-func (se *ScriptEngine) ExpandStep(step flow.Step) {
+// Expand returns a copy of step with variables expanded in all its string
+// fields. step itself is never changed: it is the parsed template that every
+// execution of it, such as each repeat iteration, expands afresh.
+func (se *ScriptEngine) Expand(step flow.Step) flow.Step {
+	expanded := flow.CloneStep(step)
+	se.expandInPlace(expanded)
+	return expanded
+}
+
+// expandInPlace rewrites step's fields with their expansions; only Expand,
+// on its own copy, may call it.
+func (se *ScriptEngine) expandInPlace(step flow.Step) {
 	// flow.ExtractSelectors is the one list of a step's selectors.
 	for _, sel := range flow.ExtractSelectors(step) {
 		*sel = *se.expandSelector(sel)

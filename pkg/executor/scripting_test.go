@@ -974,7 +974,7 @@ func TestScriptEngine_ExpandStep_InputTextStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${USERNAME}", ID: "input_${USERNAME}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Text != "Hello john" {
 		t.Errorf("Text = %q, want %q", step.Text, "Hello john")
@@ -998,7 +998,7 @@ func TestScriptEngine_ExpandStep_ScrollUntilVisibleDirection(t *testing.T) {
 		Direction: "${DIR}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Direction != "UP" {
 		t.Errorf("Direction = %q, want %q", step.Direction, "UP")
@@ -1029,7 +1029,7 @@ func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
 			se.SetVariable("OFFLINE", tc.offlineVar)
 			step := &flow.SetAirplaneModeStep{EnabledRaw: "${OFFLINE}"}
 
-			se.ExpandStep(step)
+			se.expandInPlace(step)
 
 			if step.Enabled != tc.want {
 				t.Errorf("OFFLINE=%q → Enabled=%v, want %v", tc.offlineVar, step.Enabled, tc.want)
@@ -1054,7 +1054,7 @@ func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
 		To:       &flow.Selector{ID: "^${TO}$", Text: "${TO}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.ID != "^row-a$" {
 		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "^row-a$")
@@ -1079,7 +1079,7 @@ func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
 		To:       &flow.Selector{Text: "Deep work", ChildOf: &flow.Selector{ID: "day-${DAY}"}},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.To.ChildOf.ID != "day-tomorrow" {
 		t.Errorf("To.ChildOf.ID = %q, want %q", step.To.ChildOf.ID, "day-tomorrow")
@@ -1106,7 +1106,7 @@ func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
 	se.SetVariable("TO_ID", "^row-b$")
 
 	step := f.Steps[0].(*flow.SwipeStep)
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.ID != "^row-a$" || step.To.ID != "^row-b$" {
 		t.Errorf("from/to = %q/%q, want %q/%q", step.Selector.ID, step.To.ID, "^row-a$", "^row-b$")
@@ -1123,7 +1123,7 @@ func TestScriptEngine_ExpandStep_EverySelectorInTheList(t *testing.T) {
 	shot := &flow.TakeScreenshotStep{CropOn: &flow.Selector{ID: "${X}"}}
 	cond := &flow.AssertConditionStep{Condition: flow.Condition{Visible: &flow.Selector{ID: "${X}"}}}
 	for _, step := range []flow.Step{upload, shot, cond} {
-		se.ExpandStep(step)
+		se.expandInPlace(step)
 	}
 
 	for name, got := range map[string]string{
@@ -1147,7 +1147,7 @@ func TestScriptEngine_ExpandStep_TapOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${BUTTON}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "Login" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Login")
@@ -1164,7 +1164,7 @@ func TestScriptEngine_ExpandStep_DoubleTapOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${ELEM}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "icon" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "icon")
@@ -1181,7 +1181,7 @@ func TestScriptEngine_ExpandStep_LongPressOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${ITEM}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "Delete" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Delete")
@@ -1198,7 +1198,7 @@ func TestScriptEngine_ExpandStep_AssertVisibleStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${LABEL}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "Welcome" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Welcome")
@@ -1215,7 +1215,7 @@ func TestScriptEngine_ExpandStep_AssertNotVisibleStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${MSG}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "Error" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Error")
@@ -1232,7 +1232,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
@@ -1255,7 +1255,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Arguments(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Arguments["auth_token"] != "abc123" {
 		t.Errorf("Arguments[auth_token] = %v, want %q", step.Arguments["auth_token"], "abc123")
@@ -1283,7 +1283,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Environment(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Environment["API_URL"] != "https://api.example.com/v1" {
 		t.Errorf("Environment[API_URL] = %q, want %q", step.Environment["API_URL"], "https://api.example.com/v1")
@@ -1303,7 +1303,7 @@ func TestScriptEngine_ExpandStep_StopAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
@@ -1320,7 +1320,7 @@ func TestScriptEngine_ExpandStep_KillAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
@@ -1337,7 +1337,7 @@ func TestScriptEngine_ExpandStep_ClearStateStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
@@ -1371,7 +1371,7 @@ func TestScriptEngine_FlowConfigAppID_WithCLIEnv(t *testing.T) {
 	if step.AppID == "" {
 		step.AppID = expanded // this is what flow_runner does after the fix
 	}
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.AppID != "com.testhiveapp" {
 		t.Errorf("ClearStateStep.AppID = %q, want %q", step.AppID, "com.testhiveapp")
@@ -1413,7 +1413,7 @@ func TestScriptEngine_ExpandStep_OpenLinkStep(t *testing.T) {
 		Link: "${URL}/path",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Link != "https://example.com/path" {
 		t.Errorf("Link = %q, want %q", step.Link, "https://example.com/path")
@@ -1430,7 +1430,7 @@ func TestScriptEngine_ExpandStep_PressKeyStep(t *testing.T) {
 		Key: "${KEY_NAME}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Key != "Enter" {
 		t.Errorf("Key = %q, want %q", step.Key, "Enter")
@@ -1448,7 +1448,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep(t *testing.T) {
 		NotVisible: &flow.Selector{Text: "Loading ${ELEM}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Visible.Text != "Loaded" {
 		t.Errorf("Visible.Text = %q, want %q", step.Visible.Text, "Loaded")
@@ -1468,7 +1468,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep_NilSelectors(t *testing.T) {
 	}
 
 	// Should not panic with nil selectors
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Visible != nil {
 		t.Error("Visible should remain nil")
@@ -1488,7 +1488,7 @@ func TestScriptEngine_ExpandStep_ScrollUntilVisibleStep(t *testing.T) {
 		Element: flow.Selector{Text: "${TARGET}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Element.Text != "Submit" {
 		t.Errorf("Element.Text = %q, want %q", step.Element.Text, "Submit")
@@ -1505,7 +1505,7 @@ func TestScriptEngine_ExpandStep_CopyTextFromStep(t *testing.T) {
 		Selector: flow.Selector{ID: "${FIELD}"},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.ID != "price_label" {
 		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "price_label")
@@ -1518,7 +1518,7 @@ func TestScriptEngine_ExpandStep_UnhandledStepType(t *testing.T) {
 
 	// BackStep is not handled in ExpandStep switch - should not panic
 	step := &flow.BackStep{}
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 }
 
 // ===========================================
@@ -1541,7 +1541,7 @@ func TestScriptEngine_ExpandSelector_WithRelativeSelectors(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "Button" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Button")
@@ -1580,7 +1580,7 @@ func TestScriptEngine_ExpandSelector_AllRelativeTypes(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "expanded" {
 		t.Errorf("Text = %q, want %q", step.Selector.Text, "expanded")
@@ -1628,7 +1628,7 @@ func TestScriptEngine_ExpandSelector_AllStringFields(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.Selector.Text != "test" {
 		t.Errorf("Text = %q, want %q", step.Selector.Text, "test")
@@ -2130,7 +2130,7 @@ func TestScriptEngine_ExpandStep_RunFlowStep(t *testing.T) {
 		},
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.File != "auth.yaml" {
 		t.Errorf("File = %q, want %q", step.File, "auth.yaml")
@@ -2163,7 +2163,7 @@ func TestScriptEngine_ExpandStep_RunFlowStep_NilWhen(t *testing.T) {
 		File: "${FILE}",
 	}
 
-	se.ExpandStep(step)
+	se.expandInPlace(step)
 
 	if step.File != "test.yaml" {
 		t.Errorf("File = %q, want %q", step.File, "test.yaml")
