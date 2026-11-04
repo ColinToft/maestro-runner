@@ -1067,21 +1067,73 @@ func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_SwipeWithoutTo(t *testing.T) {
+// Expansion reaches the relative selectors inside a swipe's drop target.
+func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
-	se.SetVariable("S", "50%, 80%")
+	se.SetVariable("DAY", "tomorrow")
 
-	step := &flow.SwipeStep{Start: "${S}", End: "50%, 20%"}
+	step := &flow.SwipeStep{
+		Selector: &flow.Selector{ID: "row-a"},
+		To:       &flow.Selector{Text: "Deep work", ChildOf: &flow.Selector{ID: "day-${DAY}"}},
+	}
 
 	se.ExpandStep(step)
 
-	if step.To != nil {
-		t.Errorf("To = %+v, want nil", step.To)
+	if step.To.ChildOf.ID != "day-tomorrow" {
+		t.Errorf("To.ChildOf.ID = %q, want %q", step.To.ChildOf.ID, "day-tomorrow")
 	}
-	if step.Start != "50%, 80%" {
-		t.Errorf("Start = %q, want %q", step.Start, "50%, 80%")
+}
+
+// A parsed `from:`/`to:` swipe expands at both ends: the parser's fold of
+// `from:` into Selector and the expansion line up.
+func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
+	f, err := flow.Parse([]byte(`appId: x
+---
+- swipe:
+    from:
+      id: "${FROM_ID}"
+    to:
+      id: "${TO_ID}"
+`), "drag.yaml")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	se := NewScriptEngine()
+	defer se.Close()
+	se.SetVariable("FROM_ID", "^row-a$")
+	se.SetVariable("TO_ID", "^row-b$")
+
+	step := f.Steps[0].(*flow.SwipeStep)
+	se.ExpandStep(step)
+
+	if step.Selector.ID != "^row-a$" || step.To.ID != "^row-b$" {
+		t.Errorf("from/to = %q/%q, want %q/%q", step.Selector.ID, step.To.ID, "^row-a$", "^row-b$")
+	}
+}
+
+// Selectors that only the shared list reaches are expanded too.
+func TestScriptEngine_ExpandStep_EverySelectorInTheList(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+	se.SetVariable("X", "row-a")
+
+	upload := &flow.UploadFileStep{Selector: flow.Selector{ID: "${X}"}}
+	shot := &flow.TakeScreenshotStep{CropOn: &flow.Selector{ID: "${X}"}}
+	cond := &flow.AssertConditionStep{Condition: flow.Condition{Visible: &flow.Selector{ID: "${X}"}}}
+	for _, step := range []flow.Step{upload, shot, cond} {
+		se.ExpandStep(step)
+	}
+
+	for name, got := range map[string]string{
+		"uploadFile":      upload.Selector.ID,
+		"takeScreenshot":  shot.CropOn.ID,
+		"assertCondition": cond.Condition.Visible.ID,
+	} {
+		if got != "row-a" {
+			t.Errorf("%s ID = %q, want %q", name, got, "row-a")
+		}
 	}
 }
 

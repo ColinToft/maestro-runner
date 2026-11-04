@@ -540,41 +540,16 @@ func (se *ScriptEngine) ParseInt(s string, defaultVal int) int {
 // Note: This modifies the step in place. For steps used in loops,
 // the parser creates fresh instances each iteration.
 func (se *ScriptEngine) ExpandStep(step flow.Step) {
+	// flow.ExtractSelectors is the one list of a step's selectors.
+	for _, sel := range flow.ExtractSelectors(step) {
+		*sel = *se.expandSelector(sel)
+	}
 	switch s := step.(type) {
 	case *flow.InputTextStep:
 		s.Text = se.ExpandVariables(s.Text)
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.TapOnStep:
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.DoubleTapOnStep:
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.LongPressOnStep:
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.AssertVisibleStep:
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.AssertNotVisibleStep:
-		s.Selector = *se.expandSelector(&s.Selector)
-	case *flow.WaitUntilStep:
-		if s.Visible != nil {
-			s.Visible = se.expandSelector(s.Visible)
-		}
-		if s.NotVisible != nil {
-			s.NotVisible = se.expandSelector(s.NotVisible)
-		}
 	case *flow.ScrollUntilVisibleStep:
-		s.Element = *se.expandSelector(&s.Element)
 		s.Direction = se.ExpandVariables(s.Direction)
 	case *flow.SwipeStep:
-		// SwipeStep was missing here entirely: a swipe selector with
-		// ${output.x} (e.g. element-targeted swipe-to-delete on a
-		// date-suffixed row id) kept the literal "${output.x}" and could
-		// never match.
-		if s.Selector != nil {
-			s.Selector = se.expandSelector(s.Selector)
-		}
-		if s.To != nil {
-			s.To = se.expandSelector(s.To)
-		}
 		s.Direction = se.ExpandVariables(s.Direction)
 		s.Start = se.ExpandVariables(s.Start)
 		s.End = se.ExpandVariables(s.End)
@@ -582,8 +557,6 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 		if str, ok := s.EnabledRaw.(string); ok {
 			s.Enabled = parseBoolExpr(se.ExpandVariables(str))
 		}
-	case *flow.CopyTextFromStep:
-		s.Selector = *se.expandSelector(&s.Selector)
 	case *flow.LaunchAppStep:
 		s.AppID = se.ExpandVariables(s.AppID)
 		for k, v := range s.Arguments {
@@ -608,12 +581,6 @@ func (se *ScriptEngine) ExpandStep(step flow.Step) {
 		s.File = se.ExpandVariables(s.File)
 		s.ElseFile = se.ExpandVariables(s.ElseFile)
 		if s.When != nil {
-			if s.When.Visible != nil {
-				s.When.Visible = se.expandSelector(s.When.Visible)
-			}
-			if s.When.NotVisible != nil {
-				s.When.NotVisible = se.expandSelector(s.When.NotVisible)
-			}
 			if s.When.Script != "" {
 				s.When.Script = se.ExpandVariables(s.When.Script)
 			}

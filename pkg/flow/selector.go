@@ -405,8 +405,10 @@ func CheckUnsupportedFields(sel *Selector, platform string) []string {
 	return unsupported
 }
 
-// ExtractSelectors returns all selectors referenced by a step (including nested ones
-// in relative selectors). Returns nil for steps without selectors.
+// ExtractSelectors returns every selector a step carries, the one list that
+// variable expansion and the unsupported-selector warning both read. Relative
+// selectors nested inside them are left to the reader. Returns nil for steps
+// without selectors.
 func ExtractSelectors(step Step) []*Selector {
 	var selectors []*Selector
 
@@ -425,7 +427,9 @@ func ExtractSelectors(step Step) []*Selector {
 	case *LongPressOnStep:
 		addSel(&s.Selector)
 	case *SwipeStep:
+		// From is not listed: the parser folds it into Selector.
 		addSel(s.Selector)
+		addSel(s.To)
 	case *ScrollUntilVisibleStep:
 		addSel(&s.Element)
 	case *InputTextStep:
@@ -442,6 +446,15 @@ func ExtractSelectors(step Step) []*Selector {
 	case *WaitUntilStep:
 		addSel(s.Visible)
 		addSel(s.NotVisible)
+	case *UploadFileStep:
+		addSel(&s.Selector)
+	case *TakeScreenshotStep:
+		addSel(s.CropOn)
+	case *RunFlowStep:
+		if s.When != nil {
+			addSel(s.When.Visible)
+			addSel(s.When.NotVisible)
+		}
 	}
 
 	return selectors
