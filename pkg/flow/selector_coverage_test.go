@@ -51,8 +51,9 @@ func selectorFieldsInStepGo(t *testing.T) []string {
 	return out
 }
 
-// Every selector a step carries must be in ExtractSelectors: variable
-// expansion and the unsupported-selector warning both read only that list.
+// Every selector a step carries must be in ExtractSelectors, the union of
+// StepSelectors and Conditions: expansion reads those two halves, and the
+// unsupported-selector warning reads the whole.
 func TestExtractSelectors_CoversEverySelectorField(t *testing.T) {
 	sel := func() *Selector { return &Selector{ID: "x"} }
 	// Each case builds a step with that field set and returns the selectors
@@ -114,6 +115,10 @@ func TestExtractSelectors_CoversEverySelectorField(t *testing.T) {
 			s := &RunFlowStep{When: &Condition{Visible: sel(), NotVisible: sel()}}
 			return s, []*Selector{s.When.Visible, s.When.NotVisible}
 		},
+		"RepeatStep.While": func() (Step, []*Selector) {
+			s := &RepeatStep{While: Condition{Visible: sel(), NotVisible: sel()}}
+			return s, []*Selector{s.While.Visible, s.While.NotVisible}
+		},
 		"UploadFileStep.Selector": func() (Step, []*Selector) {
 			s := &UploadFileStep{}
 			return s, []*Selector{&s.Selector}
@@ -125,7 +130,6 @@ func TestExtractSelectors_CoversEverySelectorField(t *testing.T) {
 	}
 	exempt := map[string]string{
 		"SwipeStep.From":   "the parser folds it into SwipeStep.Selector",
-		"RepeatStep.While": "executeRepeat expands it at every check, since each iteration may change it",
 	}
 
 	for _, field := range selectorFieldsInStepGo(t) {

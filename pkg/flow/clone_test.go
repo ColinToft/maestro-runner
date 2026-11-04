@@ -55,3 +55,15 @@ func TestCloneStep_Nil(t *testing.T) {
 		t.Error("CloneStep(nil) != nil")
 	}
 }
+
+// Nil pointers, nil maps and nil interfaces inside a slice clone as nil.
+func TestCloneStep_KeepsNils(t *testing.T) {
+	original := &RunFlowStep{Steps: []Step{nil, &TapOnStep{}}}
+	clone := CloneStep(original).(*RunFlowStep)
+	if clone.When != nil || clone.Env != nil || clone.Steps[0] != nil {
+		t.Errorf("clone = %+v, want nil When, Env and Steps[0]", clone)
+	}
+	if !reflect.DeepEqual(clone, original) {
+		t.Errorf("clone = %+v, want %+v", clone, original)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
@@ -960,10 +961,15 @@ func TestScriptEngine_ExecuteAssertTrue_WithWrappedExpression(t *testing.T) {
 }
 
 // ===========================================
-// ExpandStep tests
+// Expand tests
 // ===========================================
 
-func TestScriptEngine_ExpandStep_InputTextStep(t *testing.T) {
+// expand returns se.Expand(step) as step's own type.
+func expand[T flow.Step](se *ScriptEngine, step T) T {
+	return se.Expand(step).(T)
+}
+
+func TestScriptEngine_Expand_InputTextStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -974,7 +980,7 @@ func TestScriptEngine_ExpandStep_InputTextStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${USERNAME}", ID: "input_${USERNAME}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Text != "Hello john" {
 		t.Errorf("Text = %q, want %q", step.Text, "Hello john")
@@ -987,7 +993,7 @@ func TestScriptEngine_ExpandStep_InputTextStep(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_ScrollUntilVisibleDirection(t *testing.T) {
+func TestScriptEngine_Expand_ScrollUntilVisibleDirection(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -998,14 +1004,14 @@ func TestScriptEngine_ExpandStep_ScrollUntilVisibleDirection(t *testing.T) {
 		Direction: "${DIR}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Direction != "UP" {
 		t.Errorf("Direction = %q, want %q", step.Direction, "UP")
 	}
 }
 
-func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
+func TestScriptEngine_Expand_SetAirplaneModeInterpolation(t *testing.T) {
 	cases := []struct {
 		offlineVar string
 		want       bool
@@ -1029,7 +1035,7 @@ func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
 			se.SetVariable("OFFLINE", tc.offlineVar)
 			step := &flow.SetAirplaneModeStep{EnabledRaw: "${OFFLINE}"}
 
-			se.expandInPlace(step)
+			step = expand(se, step)
 
 			if step.Enabled != tc.want {
 				t.Errorf("OFFLINE=%q → Enabled=%v, want %v", tc.offlineVar, step.Enabled, tc.want)
@@ -1040,7 +1046,7 @@ func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
 
 // An element-to-element swipe expands both ends: a drag between rows whose
 // ids carry ${output.x} must resolve `from:` and `to:` alike.
-func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
+func TestScriptEngine_Expand_SwipeFromAndTo(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1054,7 +1060,7 @@ func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
 		To:       &flow.Selector{ID: "^${TO}$", Text: "${TO}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.ID != "^row-a$" {
 		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "^row-a$")
@@ -1068,7 +1074,7 @@ func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
 }
 
 // Expansion reaches the relative selectors inside a swipe's drop target.
-func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
+func TestScriptEngine_Expand_SwipeToRelativeSelector(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1079,7 +1085,7 @@ func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
 		To:       &flow.Selector{Text: "Deep work", ChildOf: &flow.Selector{ID: "day-${DAY}"}},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.To.ChildOf.ID != "day-tomorrow" {
 		t.Errorf("To.ChildOf.ID = %q, want %q", step.To.ChildOf.ID, "day-tomorrow")
@@ -1088,7 +1094,7 @@ func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
 
 // A parsed `from:`/`to:` swipe expands at both ends: the parser's fold of
 // `from:` into Selector and the expansion line up.
-func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
+func TestScriptEngine_Expand_ParsedElementSwipe(t *testing.T) {
 	f, err := flow.Parse([]byte(`appId: x
 ---
 - swipe:
@@ -1106,7 +1112,7 @@ func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
 	se.SetVariable("TO_ID", "^row-b$")
 
 	step := f.Steps[0].(*flow.SwipeStep)
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.ID != "^row-a$" || step.To.ID != "^row-b$" {
 		t.Errorf("from/to = %q/%q, want %q/%q", step.Selector.ID, step.To.ID, "^row-a$", "^row-b$")
@@ -1114,22 +1120,17 @@ func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
 }
 
 // Selectors that only the shared list reaches are expanded too.
-func TestScriptEngine_ExpandStep_EverySelectorInTheList(t *testing.T) {
+func TestScriptEngine_Expand_EverySelectorInTheList(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 	se.SetVariable("X", "row-a")
 
-	upload := &flow.UploadFileStep{Selector: flow.Selector{ID: "${X}"}}
-	shot := &flow.TakeScreenshotStep{CropOn: &flow.Selector{ID: "${X}"}}
-	cond := &flow.AssertConditionStep{Condition: flow.Condition{Visible: &flow.Selector{ID: "${X}"}}}
-	for _, step := range []flow.Step{upload, shot, cond} {
-		se.expandInPlace(step)
-	}
+	upload := expand(se, &flow.UploadFileStep{Selector: flow.Selector{ID: "${X}"}})
+	shot := expand(se, &flow.TakeScreenshotStep{CropOn: &flow.Selector{ID: "${X}"}})
 
 	for name, got := range map[string]string{
-		"uploadFile":      upload.Selector.ID,
-		"takeScreenshot":  shot.CropOn.ID,
-		"assertCondition": cond.Condition.Visible.ID,
+		"uploadFile":     upload.Selector.ID,
+		"takeScreenshot": shot.CropOn.ID,
 	} {
 		if got != "row-a" {
 			t.Errorf("%s ID = %q, want %q", name, got, "row-a")
@@ -1137,7 +1138,7 @@ func TestScriptEngine_ExpandStep_EverySelectorInTheList(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_TapOnStep(t *testing.T) {
+func TestScriptEngine_Expand_TapOnStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1147,14 +1148,14 @@ func TestScriptEngine_ExpandStep_TapOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${BUTTON}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "Login" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Login")
 	}
 }
 
-func TestScriptEngine_ExpandStep_DoubleTapOnStep(t *testing.T) {
+func TestScriptEngine_Expand_DoubleTapOnStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1164,14 +1165,14 @@ func TestScriptEngine_ExpandStep_DoubleTapOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${ELEM}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "icon" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "icon")
 	}
 }
 
-func TestScriptEngine_ExpandStep_LongPressOnStep(t *testing.T) {
+func TestScriptEngine_Expand_LongPressOnStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1181,14 +1182,14 @@ func TestScriptEngine_ExpandStep_LongPressOnStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${ITEM}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "Delete" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Delete")
 	}
 }
 
-func TestScriptEngine_ExpandStep_AssertVisibleStep(t *testing.T) {
+func TestScriptEngine_Expand_AssertVisibleStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1198,14 +1199,14 @@ func TestScriptEngine_ExpandStep_AssertVisibleStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${LABEL}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "Welcome" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Welcome")
 	}
 }
 
-func TestScriptEngine_ExpandStep_AssertNotVisibleStep(t *testing.T) {
+func TestScriptEngine_Expand_AssertNotVisibleStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1215,14 +1216,14 @@ func TestScriptEngine_ExpandStep_AssertNotVisibleStep(t *testing.T) {
 		Selector: flow.Selector{Text: "${MSG}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "Error" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Error")
 	}
 }
 
-func TestScriptEngine_ExpandStep_LaunchAppStep(t *testing.T) {
+func TestScriptEngine_Expand_LaunchAppStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1232,14 +1233,14 @@ func TestScriptEngine_ExpandStep_LaunchAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
 	}
 }
 
-func TestScriptEngine_ExpandStep_LaunchAppStep_Arguments(t *testing.T) {
+func TestScriptEngine_Expand_LaunchAppStep_Arguments(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1255,7 +1256,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Arguments(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Arguments["auth_token"] != "abc123" {
 		t.Errorf("Arguments[auth_token] = %v, want %q", step.Arguments["auth_token"], "abc123")
@@ -1268,7 +1269,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Arguments(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_LaunchAppStep_Environment(t *testing.T) {
+func TestScriptEngine_Expand_LaunchAppStep_Environment(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1283,7 +1284,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Environment(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Environment["API_URL"] != "https://api.example.com/v1" {
 		t.Errorf("Environment[API_URL] = %q, want %q", step.Environment["API_URL"], "https://api.example.com/v1")
@@ -1293,7 +1294,7 @@ func TestScriptEngine_ExpandStep_LaunchAppStep_Environment(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_StopAppStep(t *testing.T) {
+func TestScriptEngine_Expand_StopAppStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1303,14 +1304,14 @@ func TestScriptEngine_ExpandStep_StopAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
 	}
 }
 
-func TestScriptEngine_ExpandStep_KillAppStep(t *testing.T) {
+func TestScriptEngine_Expand_KillAppStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1320,14 +1321,14 @@ func TestScriptEngine_ExpandStep_KillAppStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
 	}
 }
 
-func TestScriptEngine_ExpandStep_ClearStateStep(t *testing.T) {
+func TestScriptEngine_Expand_ClearStateStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1337,44 +1338,10 @@ func TestScriptEngine_ExpandStep_ClearStateStep(t *testing.T) {
 		AppID: "${APP_ID}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, want %q", step.AppID, "com.example.app")
-	}
-}
-
-// TestScriptEngine_FlowConfigAppID_WithCLIEnv reproduces the bug where
-// flow config `appId: ${APP_ID}` overwrites the CLI -e value with the literal.
-// The fix: expand the config appId before setting it as a variable.
-func TestScriptEngine_FlowConfigAppID_WithCLIEnv(t *testing.T) {
-	se := NewScriptEngine()
-	defer se.Close()
-
-	// Step 1: CLI -e sets APP_ID (simulates fr.script.SetVariables(fr.config.Env))
-	se.SetVariable("APP_ID", "com.testhiveapp")
-
-	// Step 2: Flow config has appId: ${APP_ID}
-	// The fix: expand BEFORE setting as variable (simulates flow_runner.go:69-71)
-	flowConfigAppID := "${APP_ID}"
-	expanded := se.ExpandVariables(flowConfigAppID)
-	se.SetVariable("APP_ID", expanded)
-
-	// Verify the variable resolves to the CLI value, not the literal
-	if expanded != "com.testhiveapp" {
-		t.Errorf("ExpandVariables(\"${APP_ID}\") = %q, want %q", expanded, "com.testhiveapp")
-	}
-
-	// Step 3: Verify clearState step gets the expanded value
-	step := &flow.ClearStateStep{AppID: ""}
-	// Simulate: if step.AppID is empty, flow config appId is injected
-	if step.AppID == "" {
-		step.AppID = expanded // this is what flow_runner does after the fix
-	}
-	se.expandInPlace(step)
-
-	if step.AppID != "com.testhiveapp" {
-		t.Errorf("ClearStateStep.AppID = %q, want %q", step.AppID, "com.testhiveapp")
 	}
 }
 
@@ -1403,7 +1370,7 @@ func TestScriptEngine_FlowConfigAppID_Hardcoded(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_OpenLinkStep(t *testing.T) {
+func TestScriptEngine_Expand_OpenLinkStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1413,14 +1380,14 @@ func TestScriptEngine_ExpandStep_OpenLinkStep(t *testing.T) {
 		Link: "${URL}/path",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Link != "https://example.com/path" {
 		t.Errorf("Link = %q, want %q", step.Link, "https://example.com/path")
 	}
 }
 
-func TestScriptEngine_ExpandStep_PressKeyStep(t *testing.T) {
+func TestScriptEngine_Expand_PressKeyStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1430,14 +1397,14 @@ func TestScriptEngine_ExpandStep_PressKeyStep(t *testing.T) {
 		Key: "${KEY_NAME}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Key != "Enter" {
 		t.Errorf("Key = %q, want %q", step.Key, "Enter")
 	}
 }
 
-func TestScriptEngine_ExpandStep_WaitUntilStep(t *testing.T) {
+func TestScriptEngine_Expand_WaitUntilStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1448,7 +1415,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep(t *testing.T) {
 		NotVisible: &flow.Selector{Text: "Loading ${ELEM}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Visible.Text != "Loaded" {
 		t.Errorf("Visible.Text = %q, want %q", step.Visible.Text, "Loaded")
@@ -1458,7 +1425,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_WaitUntilStep_NilSelectors(t *testing.T) {
+func TestScriptEngine_Expand_WaitUntilStep_NilSelectors(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1468,7 +1435,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep_NilSelectors(t *testing.T) {
 	}
 
 	// Should not panic with nil selectors
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Visible != nil {
 		t.Error("Visible should remain nil")
@@ -1478,7 +1445,7 @@ func TestScriptEngine_ExpandStep_WaitUntilStep_NilSelectors(t *testing.T) {
 	}
 }
 
-func TestScriptEngine_ExpandStep_ScrollUntilVisibleStep(t *testing.T) {
+func TestScriptEngine_Expand_ScrollUntilVisibleStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1488,14 +1455,14 @@ func TestScriptEngine_ExpandStep_ScrollUntilVisibleStep(t *testing.T) {
 		Element: flow.Selector{Text: "${TARGET}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Element.Text != "Submit" {
 		t.Errorf("Element.Text = %q, want %q", step.Element.Text, "Submit")
 	}
 }
 
-func TestScriptEngine_ExpandStep_CopyTextFromStep(t *testing.T) {
+func TestScriptEngine_Expand_CopyTextFromStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -1505,20 +1472,20 @@ func TestScriptEngine_ExpandStep_CopyTextFromStep(t *testing.T) {
 		Selector: flow.Selector{ID: "${FIELD}"},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.ID != "price_label" {
 		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "price_label")
 	}
 }
 
-func TestScriptEngine_ExpandStep_UnhandledStepType(t *testing.T) {
+func TestScriptEngine_Expand_UnhandledStepType(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
-	// BackStep is not handled in ExpandStep switch - should not panic
+	// BackStep is not handled in Expand's switch - should not panic
 	step := &flow.BackStep{}
-	se.expandInPlace(step)
+	step = expand(se, step)
 }
 
 // ===========================================
@@ -1541,7 +1508,7 @@ func TestScriptEngine_ExpandSelector_WithRelativeSelectors(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "Button" {
 		t.Errorf("Selector.Text = %q, want %q", step.Selector.Text, "Button")
@@ -1580,7 +1547,7 @@ func TestScriptEngine_ExpandSelector_AllRelativeTypes(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "expanded" {
 		t.Errorf("Text = %q, want %q", step.Selector.Text, "expanded")
@@ -1628,7 +1595,7 @@ func TestScriptEngine_ExpandSelector_AllStringFields(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.Selector.Text != "test" {
 		t.Errorf("Text = %q, want %q", step.Selector.Text, "test")
@@ -2105,10 +2072,10 @@ func TestScriptEngine_EvalCondition_UndefinedVariable(t *testing.T) {
 }
 
 // ===========================================
-// ExpandStep: RunFlowStep
+// Expand: RunFlowStep
 // ===========================================
 
-func TestScriptEngine_ExpandStep_RunFlowStep(t *testing.T) {
+func TestScriptEngine_Expand_RunFlowStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -2130,29 +2097,21 @@ func TestScriptEngine_ExpandStep_RunFlowStep(t *testing.T) {
 		},
 	}
 
-	se.expandInPlace(step)
+	got := expand(se, step)
 
-	if step.File != "auth.yaml" {
-		t.Errorf("File = %q, want %q", step.File, "auth.yaml")
+	if got.File != "auth.yaml" {
+		t.Errorf("File = %q, want %q", got.File, "auth.yaml")
 	}
-	if step.When.Visible.ID != "profile_button" {
-		t.Errorf("When.Visible.ID = %q, want %q", step.When.Visible.ID, "profile_button")
+	if got.Env["MODE"] != "production" {
+		t.Errorf("Env[MODE] = %q, want %q", got.Env["MODE"], "production")
 	}
-	if step.When.NotVisible.Text != "Welcome" {
-		t.Errorf("When.NotVisible.Text = %q, want %q", step.When.NotVisible.Text, "Welcome")
-	}
-	if step.When.Script != "profile_button !== undefined" {
-		t.Errorf("When.Script = %q, want %q", step.When.Script, "profile_button !== undefined")
-	}
-	if step.When.Platform != "production" {
-		t.Errorf("When.Platform = %q, want %q", step.When.Platform, "production")
-	}
-	if step.Env["MODE"] != "production" {
-		t.Errorf("Env[MODE] = %q, want %q", step.Env["MODE"], "production")
+	// The condition is expanded where it is evaluated, not with the step.
+	if !reflect.DeepEqual(got.When, step.When) {
+		t.Errorf("When = %+v, want it unexpanded: %+v", got.When, step.When)
 	}
 }
 
-func TestScriptEngine_ExpandStep_RunFlowStep_NilWhen(t *testing.T) {
+func TestScriptEngine_Expand_RunFlowStep_NilWhen(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
 
@@ -2163,7 +2122,7 @@ func TestScriptEngine_ExpandStep_RunFlowStep_NilWhen(t *testing.T) {
 		File: "${FILE}",
 	}
 
-	se.expandInPlace(step)
+	step = expand(se, step)
 
 	if step.File != "test.yaml" {
 		t.Errorf("File = %q, want %q", step.File, "test.yaml")
