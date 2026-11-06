@@ -21,11 +21,11 @@ import (
 )
 
 const (
-	defaultFindTimeoutMs        = 17000
-	defaultActionableTimeoutMs  = 2000 // brief window to wait for the actionable gate to pass post-find
-	optionalFindTimeoutMs = 7000
-	defaultViewportW      = 1280
-	defaultViewportH      = 800
+	defaultFindTimeoutMs       = 17000
+	defaultActionableTimeoutMs = 2000 // brief window to wait for the actionable gate to pass post-find
+	optionalFindTimeoutMs      = 7000
+	defaultViewportW           = 1280
+	defaultViewportH           = 800
 )
 
 // Config holds browser driver configuration.
@@ -44,6 +44,11 @@ type Driver struct {
 	browser *rod.Browser
 	page    *rod.Page
 	config  Config
+
+	// When ownsProfile, launcher's profile directory is a throwaway one that
+	// Close deletes; a caller-supplied UserDataDir is the caller's to keep.
+	launcher    *launcher.Launcher
+	ownsProfile bool
 
 	findTimeoutMs int
 	clipboard     string
@@ -86,15 +91,10 @@ func New(cfg Config) (*Driver, error) {
 		cfg.ViewportH = defaultViewportH
 	}
 
-	// Cache downloaded browsers in ~/.maestro-runner/browsers/
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		launcher.DefaultBrowserDir = filepath.Join(homeDir, ".maestro-runner", "browsers")
+	chromeBin, err := browserBin(cfg)
+	if err != nil {
+		return nil, err
 	}
-
-	// Resolve which browser binary to use.
-	// Priority: ChromeBin (direct path) > Browser flag > default (chromium/download)
-	chromeBin := resolveBrowserBin(cfg)
 
 	// Use a clean profile with password manager disabled
 	l := launcher.New().Headless(cfg.Headless).
@@ -110,36 +110,42 @@ func New(cfg Config) (*Driver, error) {
 		// across runs. Caller is responsible for the directory's lifecycle.
 		l = l.Set("user-data-dir", cfg.UserDataDir)
 	}
-	if chromeBin != "" {
-		l = l.Bin(chromeBin)
-	} else {
-		// Using Rod's bundled Chromium — check if download is needed
-		browserDir := launcher.DefaultBrowserDir
-		if needsDownload(browserDir) {
-			log.Printf("[browser] Downloading Chromium (first time only, subsequent runs will be faster)...")
-		}
-	}
+	l = l.Bin(chromeBin)
 
 	// Write Chrome preferences to disable password manager and breach detection
 	if dataDir := l.Get("user-data-dir"); dataDir != "" {
 		writeChromePref(dataDir)
 	}
 
+	ownsProfile := cfg.UserDataDir == ""
 	controlURL, err := l.Launch()
 	if err != nil {
+		// A failed Launch has killed or never started the process, and may
+		// never signal its exit, so the profile goes directly.
+		if ownsProfile {
+			_ = os.RemoveAll(l.Get("user-data-dir"))
+		}
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
+	}
+	// The browser is running: a failure now kills it and drops its profile.
+	fail := func(err error) (*Driver, error) {
+		l.Kill()
+		if ownsProfile {
+			removeProfile(l)
+		}
+		return nil, err
 	}
 
 	// Connect with NoDefaultDevice so we control the viewport
 	browser := rod.New().ControlURL(controlURL).NoDefaultDevice()
 	if err := browser.Connect(); err != nil {
-		return nil, fmt.Errorf("failed to connect to browser: %w", err)
+		return fail(fmt.Errorf("failed to connect to browser: %w", err))
 	}
 
 	// Create a new page
 	page, err := browser.Page(proto.TargetCreateTarget{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create page: %w", err)
+		return fail(fmt.Errorf("failed to create page: %w", err))
 	}
 
 	// Set viewport
@@ -148,19 +154,21 @@ func New(cfg Config) (*Driver, error) {
 		Height: cfg.ViewportH,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to set viewport: %w", err)
+		return fail(fmt.Errorf("failed to set viewport: %w", err))
 	}
 
 	// Inject JS helper (persists across navigations)
 	_, err = page.EvalOnNewDocument(jsHelperCode)
 	if err != nil {
-		return nil, fmt.Errorf("failed to inject JS helper: %w", err)
+		return fail(fmt.Errorf("failed to inject JS helper: %w", err))
 	}
 
 	d := &Driver{
 		browser:       browser,
 		page:          page,
 		config:        cfg,
+		launcher:      l,
+		ownsProfile:   ownsProfile,
 		findTimeoutMs: defaultFindTimeoutMs,
 		viewportW:     cfg.ViewportW,
 		viewportH:     cfg.ViewportH,
@@ -178,9 +186,11 @@ func New(cfg Config) (*Driver, error) {
 	// Navigate to initial URL if provided
 	if cfg.URL != "" {
 		if err := page.Navigate(cfg.URL); err != nil {
-			return nil, fmt.Errorf("failed to navigate to %s: %w", cfg.URL, err)
+			return fail(fmt.Errorf("failed to navigate to %s: %w", cfg.URL, err))
 		}
-		page.MustWaitLoad()
+		if err := page.WaitLoad(); err != nil {
+			return fail(fmt.Errorf("failed to load %s: %w", cfg.URL, err))
+		}
 		p := page.Timeout(5 * time.Second)
 		_ = p.WaitDOMStable(300*time.Millisecond, 0)
 		d.network.waitForIdle(5*time.Second, 500*time.Millisecond)
@@ -265,7 +275,7 @@ func detectChrome() string {
 }
 
 // resolveBrowserBin determines which browser binary to use based on config.
-// Returns empty string to let Rod download/use its bundled Chromium.
+// Returns empty string to use rod's pinned Chromium (see browserBin).
 func resolveBrowserBin(cfg Config) string {
 	// Explicit ChromeBin takes highest priority (programmatic use)
 	if cfg.ChromeBin != "" {
@@ -281,7 +291,7 @@ func resolveBrowserBin(cfg Config) string {
 			return path
 		}
 		log.Printf("[browser] Chrome not found, falling back to Chromium")
-		return "" // fall back to Rod download
+		return "" // fall back to rod's Chromium
 	case "", "chromium":
 		// Default: use Rod's bundled Chromium (download if needed)
 		return ""
@@ -300,33 +310,34 @@ func resolveBrowserBin(cfg Config) string {
 // if needed. Call this once before creating multiple parallel drivers to avoid
 // N simultaneous downloads on first run.
 func EnsureBrowser(cfg Config) error {
-	if resolveBrowserBin(cfg) != "" {
-		return nil // using a local binary, no download needed
-	}
-
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		launcher.DefaultBrowserDir = filepath.Join(homeDir, ".maestro-runner", "browsers")
-	}
-
-	b := launcher.NewBrowser()
-	b.RootDir = launcher.DefaultBrowserDir
-
-	if needsDownload(b.RootDir) {
-		log.Printf("[browser] Downloading Chromium (first time only, subsequent runs will be faster)...")
-	}
-
-	_, err := b.Get()
+	_, err := browserBin(cfg)
 	return err
 }
 
-// needsDownload checks if the browser cache directory is empty or missing.
-func needsDownload(browserDir string) bool {
-	entries, err := os.ReadDir(browserDir)
-	if err != nil {
-		return true // directory doesn't exist
+// browserBin returns the configured browser, else rod's pinned Chromium,
+// downloaded only when absent. rod's Browser.Get is skipped for a cached one:
+// it test-runs Chromium with no deadline, and re-downloads if that run fails.
+func browserBin(cfg Config) (string, error) {
+	if bin := resolveBrowserBin(cfg); bin != "" {
+		return bin, nil
 	}
-	return len(entries) == 0
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate browser cache: %w", err)
+	}
+	b := launcher.NewBrowser()
+	b.RootDir = filepath.Join(homeDir, ".maestro-runner", "browsers")
+	bin := b.BinPath()
+	if _, err := os.Stat(bin); err == nil {
+		return bin, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat cached browser %s: %w", bin, err)
+	}
+	log.Printf("[browser] Downloading Chromium (first time only, subsequent runs will be faster)...")
+	if _, err := b.Get(); err != nil {
+		return "", fmt.Errorf("download Chromium: %w", err)
+	}
+	return bin, nil
 }
 
 // Close shuts down the browser. Safe to call multiple times.
@@ -336,8 +347,34 @@ func (d *Driver) Close() error {
 		if d.browser != nil {
 			d.closeErr = d.browser.Close()
 		}
+		if d.ownsProfile {
+			removeProfile(d.launcher)
+		}
 	})
 	return d.closeErr
+}
+
+const browserExitTimeout = 5 * time.Second
+
+// removeProfile deletes a launched l's profile once its browser exits, killing
+// it after browserExitTimeout; each wait is bounded, unlike rod's Cleanup.
+func removeProfile(l *launcher.Launcher) {
+	removed := make(chan struct{})
+	go func() {
+		l.Cleanup()
+		close(removed)
+	}()
+	select {
+	case <-removed:
+	case <-time.After(browserExitTimeout):
+		l.Kill()
+		select {
+		case <-removed:
+		case <-time.After(browserExitTimeout):
+			log.Printf("[browser] browser outlived kill; removing its profile anyway")
+			_ = os.RemoveAll(l.Get("user-data-dir"))
+		}
+	}
 }
 
 // networkTracker tracks in-flight network requests via CDP Network domain events.

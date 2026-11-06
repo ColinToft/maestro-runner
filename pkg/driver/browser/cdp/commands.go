@@ -1,6 +1,7 @@
 package cdp
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -2042,25 +2043,36 @@ func randomPersonName() string {
 // Polling cadence: 50ms. With a 2s default budget this gives ~40 probes,
 // which is plenty for any realistic enable-transition timing without
 // burning meaningful test runtime when the element is already actionable.
+// The deadline bounds each probe too, so a page that never answers fails it.
 func (d *Driver) waitForActionable(elem *rod.Element, timeoutMs int) error {
 	if timeoutMs <= 0 {
 		timeoutMs = defaultActionableTimeoutMs
 	}
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+	probe := elem.Context(ctx)
+	// "" when actionable, else the rejection reason: no call after the deadline.
+	// The page's answer outranks a probe error, e.g. one cut short by the deadline.
+	var answered string
+	var probeErr error
 	for {
-		res, err := elem.Eval(`() => window.__maestro._isActionable(this)`)
-		if err == nil && res != nil && res.Value.Bool() {
+		res, err := probe.Eval(`() => window.__maestro._isActionable(this) ? '' : String(window.__maestroLastRejection || 'unknown')`)
+		switch {
+		case err == nil && res.Value.Str() == "":
 			return nil
+		case err == nil:
+			answered = res.Value.Str()
+		default:
+			probeErr = err
 		}
-		if !time.Now().Before(deadline) {
-			break
+		select {
+		case <-ctx.Done():
+			reason := answered
+			if reason == "" {
+				reason = "page did not answer the probe: " + probeErr.Error()
+			}
+			return fmt.Errorf("element not actionable within %dms (last rejection: %s)", timeoutMs, reason)
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	// Surface the most recent rejection reason for easier debugging.
-	reason := "unknown"
-	if r, err := elem.Eval(`() => String(window.__maestroLastRejection || 'unknown')`); err == nil && r != nil {
-		reason = r.Value.Str()
-	}
-	return fmt.Errorf("element not actionable within %dms (last rejection: %s)", timeoutMs, reason)
 }

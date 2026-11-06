@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 )
@@ -16,11 +17,9 @@ import (
 //   - ?aria=1         → button has aria-disabled="true"
 //   - ?pointer=1      → button has CSS pointer-events: none
 //   - ?hidden=1       → button has display: none
-//   - ?enableAfter=N  → button starts disabled then enables after N ms
 func actionablePage(state string) string {
 	style := ""
 	attrs := ""
-	scripts := ""
 	switch state {
 	case "disabled":
 		attrs = " disabled"
@@ -30,14 +29,38 @@ func actionablePage(state string) string {
 		style = " style=\"pointer-events: none\""
 	case "hidden":
 		style = " style=\"display: none\""
-	case "enableAfter":
-		attrs = " disabled"
-		scripts = `<script>setTimeout(() => document.getElementById('btn').removeAttribute('disabled'), 200);</script>`
 	}
 	return fmt.Sprintf(`<!DOCTYPE html><html><body>
 <button id="btn"%s%s onclick="document.title='clicked'">DoIt</button>
-%s
-</body></html>`, attrs, style, scripts)
+</body></html>`, attrs, style)
+}
+
+// enableOnFirstRejection enables #btn shortly after the gate first rejects it
+// and reports whether that happened. (A load-time timer fires before New()
+// returns, leaving the gate nothing to wait through.)
+func enableOnFirstRejection(t *testing.T, d *Driver) (rejected func() bool) {
+	t.Helper()
+	_, err := d.page.Eval(`() => {
+		const orig = window.__maestro._isActionable;
+		window.__maestro._isActionable = function (el) {
+			const ok = orig.call(this, el);
+			if (!ok && !window.__rejectedOnce) {
+				window.__rejectedOnce = true;
+				setTimeout(() => el.removeAttribute('disabled'), 100);
+			}
+			return ok;
+		};
+	}`)
+	if err != nil {
+		t.Fatalf("install enable hook: %v", err)
+	}
+	return func() bool {
+		res, err := d.page.Eval(`() => window.__rejectedOnce === true`)
+		if err != nil {
+			t.Fatalf("read enable hook: %v", err)
+		}
+		return res.Value.Bool()
+	}
 }
 
 func newActionableTestServer(html string) *httptest.Server {
@@ -127,11 +150,9 @@ func TestIsActionable_PointerEventsNone(t *testing.T) {
 	}
 }
 
-// TestWaitForActionable_WaitsForEnable: button starts disabled and enables
-// after 200ms. waitForActionable must wait through the disable state and
-// succeed once the page enables the control.
+// TestWaitForActionable_WaitsForEnable: the gate outwaits a disabled state.
 func TestWaitForActionable_WaitsForEnable(t *testing.T) {
-	ts := newActionableTestServer(actionablePage("enableAfter"))
+	ts := newActionableTestServer(actionablePage("disabled"))
 	defer ts.Close()
 	d := newTestDriver(t, ts.URL)
 	defer d.Close()
@@ -140,10 +161,78 @@ func TestWaitForActionable_WaitsForEnable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findElement: %v", err)
 	}
+	rejected := enableOnFirstRejection(t, d)
 
-	// Wait up to 2s. Page enables at 200ms; should succeed within ~250ms.
 	if err := d.waitForActionable(elem, 2000); err != nil {
 		t.Fatalf("expected to become actionable after enable; got: %v", err)
+	}
+	if !rejected() {
+		t.Fatal("gate never saw the disabled state, so it did not wait through it")
+	}
+}
+
+// TestWaitForActionable_DeadlineBoundsUnansweredProbe: a hung page fails
+// the gate at its deadline.
+func TestWaitForActionable_DeadlineBoundsUnansweredProbe(t *testing.T) {
+	ts := newActionableTestServer(actionablePage("disabled"))
+	defer ts.Close()
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	elem, _, err := d.findElement(flow.Selector{ID: "btn"}, false, 2000)
+	if err != nil {
+		t.Fatalf("findElement: %v", err)
+	}
+	if _, err := d.page.Eval(`() => { setTimeout(() => { for (;;) {} }, 0); }`); err != nil {
+		t.Fatalf("schedule main-thread hang: %v", err)
+	}
+
+	const timeoutMs = 300
+	start := time.Now()
+	err = d.waitForActionable(elem, timeoutMs)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error from a page that never answers, got nil")
+	}
+	if !strings.Contains(err.Error(), "not actionable") {
+		t.Errorf("expected error to mention 'not actionable', got: %v", err)
+	}
+	if limit := timeoutMs*time.Millisecond + time.Second; elapsed > limit {
+		t.Errorf("gate returned after %v, past its %dms deadline (limit %v)", elapsed, timeoutMs, limit)
+	}
+}
+
+// TestWaitForActionable_DeadlineKeepsPageReason: when the deadline cuts a
+// probe short, the error still carries the page's last rejection reason.
+func TestWaitForActionable_DeadlineKeepsPageReason(t *testing.T) {
+	ts := newActionableTestServer(actionablePage("disabled"))
+	defer ts.Close()
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	elem, _, err := d.findElement(flow.Selector{ID: "btn"}, false, 2000)
+	if err != nil {
+		t.Fatalf("findElement: %v", err)
+	}
+	// The first probe answers; every later one hangs past the deadline.
+	_, err = d.page.Eval(`() => {
+		const orig = window.__maestro._isActionable;
+		let calls = 0;
+		window.__maestro._isActionable = function (el) {
+			if (++calls > 1) { for (;;) {} }
+			return orig.call(this, el);
+		};
+	}`)
+	if err != nil {
+		t.Fatalf("install hang hook: %v", err)
+	}
+
+	err = d.waitForActionable(elem, 300)
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "last rejection: disabled-prop") {
+		t.Errorf("expected the page's reason disabled-prop, got: %v", err)
 	}
 }
 
@@ -191,16 +280,19 @@ func TestTapOn_RejectsDisabled(t *testing.T) {
 	}
 }
 
-// TestTapOn_PassesAfterEnable: page enables the button after 200ms; the
-// existing find loop + new actionable gate cooperate so tapOn succeeds.
+// TestTapOn_PassesAfterEnable: tapOn waits through a disabled state, then taps.
 func TestTapOn_PassesAfterEnable(t *testing.T) {
-	ts := newActionableTestServer(actionablePage("enableAfter"))
+	ts := newActionableTestServer(actionablePage("disabled"))
 	defer ts.Close()
 	d := newTestDriver(t, ts.URL)
 	defer d.Close()
+	rejected := enableOnFirstRejection(t, d)
 
 	res := d.Execute(&flow.TapOnStep{Selector: flow.Selector{ID: "btn"}})
 	if !res.Success {
 		t.Fatalf("expected tapOn to succeed once button enables; got: %s", res.Message)
+	}
+	if !rejected() {
+		t.Fatal("gate never saw the disabled state, so it did not wait through it")
 	}
 }

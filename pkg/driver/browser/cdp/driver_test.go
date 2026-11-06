@@ -15,6 +15,7 @@ import (
 	"github.com/devicelab-dev/maestro-runner/pkg/core"
 	"github.com/devicelab-dev/maestro-runner/pkg/flow"
 	"github.com/go-rod/rod/lib/input"
+	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -3321,26 +3322,159 @@ func TestJsSelectorTypeValue(t *testing.T) {
 	}
 }
 
-// --- Tests for needsDownload ---
-
-func TestNeedsDownload(t *testing.T) {
-	// Non-existent directory
-	if !needsDownload("/nonexistent/path/xyz") {
-		t.Error("needsDownload should return true for non-existent directory")
-	}
-
-	// Empty directory
+// isolateProfiles points rod's throwaway profiles at a fresh test directory.
+func isolateProfiles(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
-	if !needsDownload(dir) {
-		t.Error("needsDownload should return true for empty directory")
-	}
+	prev := launcher.DefaultUserDataDirPrefix
+	launcher.DefaultUserDataDirPrefix = dir
+	t.Cleanup(func() { launcher.DefaultUserDataDirPrefix = prev })
+	return dir
+}
 
-	// Directory with files
-	if err := os.WriteFile(dir+"/somefile", []byte("data"), 0o644); err != nil {
+func dirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if needsDownload(dir) {
-		t.Error("needsDownload should return false for non-empty directory")
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names
+}
+
+// TestClose_RemovesEphemeralProfile: Close deletes the throwaway profile.
+func TestClose_RemovesEphemeralProfile(t *testing.T) {
+	profiles := isolateProfiles(t)
+	ts := newTestServer()
+	defer ts.Close()
+
+	d := newTestDriver(t, ts.URL)
+	if got := dirEntries(t, profiles); len(got) != 1 {
+		t.Fatalf("expected one profile while the browser runs, got %v", got)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := dirEntries(t, profiles); len(got) != 0 {
+		t.Errorf("Close left profile directories behind: %v", got)
+	}
+}
+
+// TestClose_KeepsCallerProfile: Close leaves a caller-supplied UserDataDir.
+func TestClose_KeepsCallerProfile(t *testing.T) {
+	profiles := isolateProfiles(t)
+	userDataDir := t.TempDir()
+	ts := newTestServer()
+	defer ts.Close()
+
+	d, err := New(Config{Headless: true, URL: ts.URL, UserDataDir: userDataDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := dirEntries(t, userDataDir); len(got) == 0 {
+		t.Error("caller's profile directory was emptied or never used")
+	}
+	if got := dirEntries(t, profiles); len(got) != 0 {
+		t.Errorf("unexpected throwaway profiles: %v", got)
+	}
+	// Close returns before the browser exits on a caller's profile. Cleanup
+	// waits for the exit and deletes this (test-owned) directory.
+	d.launcher.Cleanup()
+}
+
+// TestNew_FailureAfterLaunchRemovesProfile: New failing after launch
+// removes the profile.
+func TestNew_FailureAfterLaunchRemovesProfile(t *testing.T) {
+	profiles := isolateProfiles(t)
+	ts := newTestServer()
+	refused := ts.URL
+	ts.Close() // nothing listens on the URL now
+
+	d, err := New(Config{Headless: true, URL: refused})
+	if err == nil {
+		d.Close()
+		t.Fatalf("expected New to fail navigating to %s", refused)
+	}
+	if !strings.Contains(err.Error(), "failed to navigate") {
+		t.Fatalf("expected the navigation failure, got: %v", err)
+	}
+	if got := dirEntries(t, profiles); len(got) != 0 {
+		t.Errorf("failed New left profile directories behind: %v", got)
+	}
+}
+
+// TestBrowserBin_Resolution: an explicit binary needs no cache lookup; the
+// cache lookup fails loudly when it cannot run.
+func TestBrowserBin_Resolution(t *testing.T) {
+	unreadable := t.TempDir()
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+
+	for _, tc := range []struct {
+		name    string
+		home    string
+		cfg     Config
+		want    string
+		wantErr string
+	}{
+		{"explicit ChromeBin without a home", "", Config{ChromeBin: "/opt/chrome"}, "/opt/chrome", ""},
+		{"no home for the cache", "", Config{}, "", "locate browser cache"},
+		{"unreadable cache", unreadable, Config{}, "", "stat cached browser"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			got, err := browserBin(tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %q, %v", tc.wantErr, got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// TestBrowserBin_CachedChromiumIsNotRun: the stand-in passes rod's validation
+// run (so a regression cannot download) and records that it ran.
+func TestBrowserBin_CachedChromiumIsNotRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	b := launcher.NewBrowser()
+	b.RootDir = filepath.Join(home, ".maestro-runner", "browsers")
+	bin := b.BinPath()
+	marker := filepath.Join(home, "ran")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\ntouch '" + marker + "'\necho '<html><head></head><body></body></html>'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, browser := range []string{"", "chromium"} {
+		got, err := browserBin(Config{Browser: browser})
+		if err != nil {
+			t.Fatalf("browserBin(Browser=%q): %v", browser, err)
+		}
+		if got != bin {
+			t.Errorf("browserBin(Browser=%q) = %q, want cached %q", browser, got, bin)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("browserBin executed the cached Chromium; it must only check that it exists")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
 	}
 }
 
