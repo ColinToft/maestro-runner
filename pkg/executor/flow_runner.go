@@ -920,19 +920,15 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 	start := time.Now()
 	var result *core.CommandResult
 
-	// For nested compound steps, we need to track their sub-commands separately
-	var nestedSubCommands []report.Command
+	// A nested compound step collects its children into a fresh slice; the
+	// parent's slice is restored before this step's own record is appended.
+	var parentSubCommands []report.Command
 	isCompoundStep := false
 	switch step.(type) {
 	case *flow.RepeatStep, *flow.RetryStep, *flow.RunFlowStep:
 		isCompoundStep = true
-		// Save parent's subCommands and start fresh for this nested compound step
-		parentSubCommands := fr.subCommands
+		parentSubCommands = fr.subCommands
 		fr.subCommands = nil
-		defer func() {
-			nestedSubCommands = fr.subCommands
-			fr.subCommands = parentSubCommands
-		}()
 	}
 
 	switch s := step.(type) {
@@ -1074,6 +1070,12 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 
 	duration := time.Since(start).Milliseconds()
 
+	var nestedSubCommands []report.Command
+	if isCompoundStep {
+		nestedSubCommands = fr.subCommands
+		fr.subCommands = parentSubCommands
+	}
+
 	// Enrich sub-step errors with runFlow timeout context
 	if !result.Success && fr.runFlowTimeout != "" && fr.ctx.Err() != nil {
 		result = fr.enrichTimeoutError(result)
@@ -1114,6 +1116,8 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 		StartTime: &start,
 		EndTime:   &now,
 		Duration:  &duration,
+		// nil unless this is a compound step
+		SubCommands: nestedSubCommands,
 	}
 
 	// Add error info if failed
@@ -1122,11 +1126,6 @@ func (fr *FlowRunner) executeNestedStep(step flow.Step) *core.CommandResult {
 			Type:    "execution",
 			Message: result.Error.Error(),
 		}
-	}
-
-	// Add nested sub-commands for compound steps
-	if isCompoundStep {
-		cmd.SubCommands = nestedSubCommands
 	}
 
 	fr.subCommands = append(fr.subCommands, cmd)
