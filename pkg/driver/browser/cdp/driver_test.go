@@ -3383,8 +3383,8 @@ func TestClose_KeepsCallerProfile(t *testing.T) {
 	if got := dirEntries(t, profiles); len(got) != 0 {
 		t.Errorf("unexpected throwaway profiles: %v", got)
 	}
-	// Close does not wait for the browser to exit on a caller's profile, so
-	// wait here before t.TempDir removes the directory under it.
+	// Close returns before the browser exits on a caller's profile. Cleanup
+	// waits for the exit and deletes this (test-owned) directory.
 	d.launcher.Cleanup()
 }
 
@@ -3406,6 +3406,42 @@ func TestNew_FailureAfterLaunchRemovesProfile(t *testing.T) {
 	}
 	if got := dirEntries(t, profiles); len(got) != 0 {
 		t.Errorf("failed New left profile directories behind: %v", got)
+	}
+}
+
+// TestBrowserBin_Resolution: an explicit binary needs no cache lookup; the
+// cache lookup fails loudly when it cannot run.
+func TestBrowserBin_Resolution(t *testing.T) {
+	unreadable := t.TempDir()
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+
+	for _, tc := range []struct {
+		name    string
+		home    string
+		cfg     Config
+		want    string
+		wantErr string
+	}{
+		{"explicit ChromeBin without a home", "", Config{ChromeBin: "/opt/chrome"}, "/opt/chrome", ""},
+		{"no home for the cache", "", Config{}, "", "locate browser cache"},
+		{"unreadable cache", unreadable, Config{}, "", "stat cached browser"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			got, err := browserBin(tc.cfg)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %q, %v", tc.wantErr, got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
 	}
 }
 

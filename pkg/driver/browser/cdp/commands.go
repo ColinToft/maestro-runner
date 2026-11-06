@@ -2052,21 +2052,25 @@ func (d *Driver) waitForActionable(elem *rod.Element, timeoutMs int) error {
 	defer cancel()
 	probe := elem.Context(ctx)
 	// "" when actionable, else the rejection reason: no call after the deadline.
-	reason := "unknown"
+	// The page's answer outranks a probe error, e.g. one cut short by the deadline.
+	var answered string
+	var probeErr error
 	for {
 		res, err := probe.Eval(`() => window.__maestro._isActionable(this) ? '' : String(window.__maestroLastRejection || 'unknown')`)
 		switch {
 		case err == nil && res.Value.Str() == "":
 			return nil
 		case err == nil:
-			reason = res.Value.Str()
-		case ctx.Err() != nil:
-			reason = "page did not answer the probe: " + err.Error()
+			answered = res.Value.Str()
 		default:
-			reason = err.Error()
+			probeErr = err
 		}
 		select {
 		case <-ctx.Done():
+			reason := answered
+			if reason == "" {
+				reason = "page did not answer the probe: " + probeErr.Error()
+			}
 			return fmt.Errorf("element not actionable within %dms (last rejection: %s)", timeoutMs, reason)
 		case <-time.After(50 * time.Millisecond):
 		}

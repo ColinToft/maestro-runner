@@ -202,6 +202,40 @@ func TestWaitForActionable_DeadlineBoundsUnansweredProbe(t *testing.T) {
 	}
 }
 
+// TestWaitForActionable_DeadlineKeepsPageReason: when the deadline cuts a
+// probe short, the error still carries the page's last rejection reason.
+func TestWaitForActionable_DeadlineKeepsPageReason(t *testing.T) {
+	ts := newActionableTestServer(actionablePage("disabled"))
+	defer ts.Close()
+	d := newTestDriver(t, ts.URL)
+	defer d.Close()
+
+	elem, _, err := d.findElement(flow.Selector{ID: "btn"}, false, 2000)
+	if err != nil {
+		t.Fatalf("findElement: %v", err)
+	}
+	// The first probe answers; every later one hangs past the deadline.
+	_, err = d.page.Eval(`() => {
+		const orig = window.__maestro._isActionable;
+		let calls = 0;
+		window.__maestro._isActionable = function (el) {
+			if (++calls > 1) { for (;;) {} }
+			return orig.call(this, el);
+		};
+	}`)
+	if err != nil {
+		t.Fatalf("install hang hook: %v", err)
+	}
+
+	err = d.waitForActionable(elem, 300)
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "last rejection: disabled-prop") {
+		t.Errorf("expected the page's reason disabled-prop, got: %v", err)
+	}
+}
+
 // TestWaitForActionable_TimesOut: persistently disabled button never
 // becomes actionable; waitForActionable returns a clear error.
 func TestWaitForActionable_TimesOut(t *testing.T) {

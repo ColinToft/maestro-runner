@@ -188,7 +188,9 @@ func New(cfg Config) (*Driver, error) {
 		if err := page.Navigate(cfg.URL); err != nil {
 			return fail(fmt.Errorf("failed to navigate to %s: %w", cfg.URL, err))
 		}
-		page.MustWaitLoad()
+		if err := page.WaitLoad(); err != nil {
+			return fail(fmt.Errorf("failed to load %s: %w", cfg.URL, err))
+		}
 		p := page.Timeout(5 * time.Second)
 		_ = p.WaitDOMStable(300*time.Millisecond, 0)
 		d.network.waitForIdle(5*time.Second, 500*time.Millisecond)
@@ -355,7 +357,7 @@ func (d *Driver) Close() error {
 const browserExitTimeout = 5 * time.Second
 
 // removeProfile deletes a launched l's profile once its browser exits, killing
-// it after browserExitTimeout (rod's Cleanup waits with no deadline).
+// it after browserExitTimeout; each wait is bounded, unlike rod's Cleanup.
 func removeProfile(l *launcher.Launcher) {
 	removed := make(chan struct{})
 	go func() {
@@ -366,7 +368,12 @@ func removeProfile(l *launcher.Launcher) {
 	case <-removed:
 	case <-time.After(browserExitTimeout):
 		l.Kill()
-		<-removed
+		select {
+		case <-removed:
+		case <-time.After(browserExitTimeout):
+			log.Printf("[browser] browser outlived kill; removing its profile anyway")
+			_ = os.RemoveAll(l.Get("user-data-dir"))
+		}
 	}
 }
 
