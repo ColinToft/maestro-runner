@@ -3322,10 +3322,7 @@ func TestJsSelectorTypeValue(t *testing.T) {
 	}
 }
 
-// --- Tests for the browser profile lifecycle ---
-
-// isolateProfiles points rod's throwaway profiles at a fresh directory for
-// one test and returns it.
+// isolateProfiles points rod's throwaway profiles at a fresh test directory.
 func isolateProfiles(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -3348,8 +3345,7 @@ func dirEntries(t *testing.T, dir string) []string {
 	return names
 }
 
-// TestClose_RemovesEphemeralProfile: a driver launched without a UserDataDir
-// owns its profile directory, and Close deletes it.
+// TestClose_RemovesEphemeralProfile: Close deletes the throwaway profile.
 func TestClose_RemovesEphemeralProfile(t *testing.T) {
 	profiles := isolateProfiles(t)
 	ts := newTestServer()
@@ -3367,8 +3363,7 @@ func TestClose_RemovesEphemeralProfile(t *testing.T) {
 	}
 }
 
-// TestClose_KeepsCallerProfile: a caller-supplied UserDataDir is a persistent
-// profile; Close leaves it, and creates no throwaway one.
+// TestClose_KeepsCallerProfile: Close leaves a caller-supplied UserDataDir.
 func TestClose_KeepsCallerProfile(t *testing.T) {
 	profiles := isolateProfiles(t)
 	userDataDir := t.TempDir()
@@ -3393,9 +3388,8 @@ func TestClose_KeepsCallerProfile(t *testing.T) {
 	d.launcher.Cleanup()
 }
 
-// TestNew_FailureAfterLaunchRemovesProfile: when New fails after the browser
-// started (here, the initial navigation is refused), it removes the profile
-// rather than leaking it with the process.
+// TestNew_FailureAfterLaunchRemovesProfile: New failing after launch
+// removes the profile.
 func TestNew_FailureAfterLaunchRemovesProfile(t *testing.T) {
 	profiles := isolateProfiles(t)
 	ts := newTestServer()
@@ -3415,12 +3409,8 @@ func TestNew_FailureAfterLaunchRemovesProfile(t *testing.T) {
 	}
 }
 
-// --- Tests for browserBin ---
-
-// TestBrowserBin_CachedChromiumIsNotRun: a cached Chromium is returned
-// without being executed. The stand-in answers rod's validation run
-// correctly (so a regression cannot trigger a download) and records that it
-// ran.
+// TestBrowserBin_CachedChromiumIsNotRun: the stand-in passes rod's validation
+// run (so a regression cannot download) and records that it ran.
 func TestBrowserBin_CachedChromiumIsNotRun(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

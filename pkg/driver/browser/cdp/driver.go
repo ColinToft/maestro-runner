@@ -45,9 +45,8 @@ type Driver struct {
 	page    *rod.Page
 	config  Config
 
-	// launcher started the browser process. When ownsProfile, its profile
-	// directory is a throwaway one that Close deletes; a caller-supplied
-	// UserDataDir is the caller's to keep.
+	// When ownsProfile, launcher's profile directory is a throwaway one that
+	// Close deletes; a caller-supplied UserDataDir is the caller's to keep.
 	launcher    *launcher.Launcher
 	ownsProfile bool
 
@@ -128,8 +127,7 @@ func New(cfg Config) (*Driver, error) {
 		}
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
 	}
-	// Past this point the browser process is running: every failure kills
-	// it, then removes the profile it was using.
+	// The browser is running: a failure now kills it and drops its profile.
 	fail := func(err error) (*Driver, error) {
 		l.Kill()
 		if ownsProfile {
@@ -314,11 +312,9 @@ func EnsureBrowser(cfg Config) error {
 	return err
 }
 
-// browserBin returns the executable to launch: the configured browser, else
-// rod's pinned Chromium from ~/.maestro-runner/browsers, downloaded only when
-// absent. A cached executable is used as-is: rod's own lookup (Browser.Get)
-// test-runs Chromium with no deadline before every launch, and wipes the cache
-// and re-downloads when that run fails.
+// browserBin returns the configured browser, else rod's pinned Chromium,
+// downloaded only when absent. rod's Browser.Get is skipped for a cached one:
+// it test-runs Chromium with no deadline, and re-downloads if that run fails.
 func browserBin(cfg Config) (string, error) {
 	if bin := resolveBrowserBin(cfg); bin != "" {
 		return bin, nil
@@ -356,14 +352,10 @@ func (d *Driver) Close() error {
 	return d.closeErr
 }
 
-// browserExitTimeout bounds how long removeProfile waits for the browser
-// process to exit on its own before killing it.
 const browserExitTimeout = 5 * time.Second
 
-// removeProfile deletes the throwaway profile directory of a launched l once
-// its browser process has exited, killing the process if it outlives
-// browserExitTimeout. The directory cannot go while Chromium still writes to
-// it, and rod's Cleanup waits for the exit with no deadline.
+// removeProfile deletes a launched l's profile once its browser exits, killing
+// it after browserExitTimeout (rod's Cleanup waits with no deadline).
 func removeProfile(l *launcher.Launcher) {
 	removed := make(chan struct{})
 	go func() {

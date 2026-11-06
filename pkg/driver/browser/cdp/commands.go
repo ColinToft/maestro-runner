@@ -2043,9 +2043,7 @@ func randomPersonName() string {
 // Polling cadence: 50ms. With a 2s default budget this gives ~40 probes,
 // which is plenty for any realistic enable-transition timing without
 // burning meaningful test runtime when the element is already actionable.
-//
-// The deadline bounds each probe as well as the loop: a page whose main
-// thread never answers fails the gate at the deadline instead of holding it.
+// The deadline bounds each probe too, so a page that never answers fails it.
 func (d *Driver) waitForActionable(elem *rod.Element, timeoutMs int) error {
 	if timeoutMs <= 0 {
 		timeoutMs = defaultActionableTimeoutMs
@@ -2053,8 +2051,7 @@ func (d *Driver) waitForActionable(elem *rod.Element, timeoutMs int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 	defer cancel()
 	probe := elem.Context(ctx)
-	// The probe answers "" when actionable, else the rejection reason, so a
-	// failure never needs a second round trip after the deadline.
+	// "" when actionable, else the rejection reason: no call after the deadline.
 	reason := "unknown"
 	for {
 		res, err := probe.Eval(`() => window.__maestro._isActionable(this) ? '' : String(window.__maestroLastRejection || 'unknown')`)

@@ -35,10 +35,9 @@ func actionablePage(state string) string {
 </body></html>`, attrs, style)
 }
 
-// enableOnFirstRejection makes the page enable #btn shortly after the
-// actionable gate first rejects it, and reports whether that happened. A
-// timer started at page load would fire before New() returns (it waits for
-// the page to settle), leaving nothing for the gate to wait through.
+// enableOnFirstRejection enables #btn shortly after the gate first rejects it
+// and reports whether that happened. (A load-time timer fires before New()
+// returns, leaving the gate nothing to wait through.)
 func enableOnFirstRejection(t *testing.T, d *Driver) (rejected func() bool) {
 	t.Helper()
 	_, err := d.page.Eval(`() => {
@@ -151,9 +150,7 @@ func TestIsActionable_PointerEventsNone(t *testing.T) {
 	}
 }
 
-// TestWaitForActionable_WaitsForEnable: the button is disabled when the gate
-// first probes it and enables 100ms later. waitForActionable must wait
-// through the disabled state and succeed once the page enables the control.
+// TestWaitForActionable_WaitsForEnable: the gate outwaits a disabled state.
 func TestWaitForActionable_WaitsForEnable(t *testing.T) {
 	ts := newActionableTestServer(actionablePage("disabled"))
 	defer ts.Close()
@@ -174,9 +171,8 @@ func TestWaitForActionable_WaitsForEnable(t *testing.T) {
 	}
 }
 
-// TestWaitForActionable_DeadlineBoundsUnansweredProbe: once the page's main
-// thread stops answering, a probe never returns on its own. The gate must
-// still fail at its deadline rather than block on the probe.
+// TestWaitForActionable_DeadlineBoundsUnansweredProbe: a hung page fails
+// the gate at its deadline.
 func TestWaitForActionable_DeadlineBoundsUnansweredProbe(t *testing.T) {
 	ts := newActionableTestServer(actionablePage("disabled"))
 	defer ts.Close()
@@ -250,8 +246,7 @@ func TestTapOn_RejectsDisabled(t *testing.T) {
 	}
 }
 
-// TestTapOn_PassesAfterEnable: the button enables after the actionable gate
-// first rejects it; the find loop and the gate cooperate so tapOn succeeds.
+// TestTapOn_PassesAfterEnable: tapOn waits through a disabled state, then taps.
 func TestTapOn_PassesAfterEnable(t *testing.T) {
 	ts := newActionableTestServer(actionablePage("disabled"))
 	defer ts.Close()
