@@ -17,8 +17,6 @@ type Driver struct {
 
 	// Internal state
 	stepCount int
-	// now is the clock Execute measures Duration with.
-	now func() time.Time
 }
 
 // Config configures mock driver behavior.
@@ -40,13 +38,13 @@ func New(cfg Config) *Driver {
 	if cfg.DeviceID == "" {
 		cfg.DeviceID = "mock-device"
 	}
-	return &Driver{Config: cfg, now: time.Now}
+	return &Driver{Config: cfg}
 }
 
 // Execute simulates executing a step.
 func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	d.stepCount++
-	start := d.now()
+	start := time.Now()
 
 	// Simulate delay
 	if d.Config.StepDelay > 0 {
@@ -57,7 +55,7 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	if d.Config.FailOnStep > 0 && d.stepCount == d.Config.FailOnStep {
 		return &core.CommandResult{
 			Success:  false,
-			Duration: d.now().Sub(start),
+			Duration: time.Since(start),
 			Error:    fmt.Errorf("mock failure on step %d", d.stepCount),
 			Message:  fmt.Sprintf("Simulated failure on step %d (%s)", d.stepCount, step.Type()),
 		}
@@ -66,7 +64,7 @@ func (d *Driver) Execute(step flow.Step) *core.CommandResult {
 	// Success - return element info for tap/assert steps
 	result := &core.CommandResult{
 		Success:  true,
-		Duration: d.now().Sub(start),
+		Duration: time.Since(start),
 		Message:  fmt.Sprintf("Mock executed: %s", step.Type()),
 	}
 
