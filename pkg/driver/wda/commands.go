@@ -476,16 +476,16 @@ func (d *Driver) scroll(step *flow.ScrollStep) *core.CommandResult {
 }
 
 // scrollUntilVisible scrolls until the element is on screen (Maestro
-// semantics): at least visibilityPercentage of its area, or any of it when
-// unset. With centerElement it is then dragged to the screen center along the
+// semantics): at least RequiredVisibility of its area. With centerElement it is then dragged to the screen center along the
 // scroll axis, and the step fails if it cannot get there.
 func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.CommandResult {
 	direction := strings.ToLower(step.Direction)
 	if direction == "" {
 		direction = "down"
 	}
-	if step.VisibilityPercentage < 0 || step.VisibilityPercentage > 100 {
-		return errorResult(fmt.Errorf("visibilityPercentage must be 0-100, got %d", step.VisibilityPercentage), "Invalid scrollUntilVisible option")
+	pct := step.RequiredVisibility()
+	if pct < 0 || pct > 100 {
+		return errorResult(fmt.Errorf("visibilityPercentage must be 0-100, got %d", pct), "Invalid scrollUntilVisible option")
 	}
 	width, height, err := d.screenSize()
 	if err != nil {
@@ -513,7 +513,7 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 
 	// Centering brings the element fully on screen itself, so it only needs
 	// the element to have appeared; the percentage is checked afterwards.
-	required := float64(step.VisibilityPercentage)
+	required := float64(pct)
 	if step.CenterElement {
 		required = 0
 	}
@@ -563,7 +563,7 @@ func (d *Driver) scrollUntilVisible(step *flow.ScrollUntilVisibleStep) *core.Com
 
 // placeScrolledElement finishes a scrollUntilVisible whose element is on
 // screen: centers it when centerElement is set, then requires
-// visibilityPercentage of it to be visible.
+// RequiredVisibility of it to be visible.
 func (d *Driver) placeScrolledElement(step *flow.ScrollUntilVisibleStep, direction string, settle time.Duration, info *core.ElementInfo) *core.CommandResult {
 	if !step.CenterElement {
 		return successResult("Element found after scrolling", info)
@@ -576,8 +576,9 @@ func (d *Driver) placeScrolledElement(step *flow.ScrollUntilVisibleStep, directi
 	if err != nil {
 		return errorResult(err, "Failed to get screen size")
 	}
-	if visible := visiblePercentage(centered.Bounds, width, height); visible < float64(step.VisibilityPercentage) {
-		return errorResult(fmt.Errorf("only %.0f%% visible once centered, need %d%%", visible, step.VisibilityPercentage),
+	pct := step.RequiredVisibility()
+	if visible := visiblePercentage(centered.Bounds, width, height); visible < float64(pct) {
+		return errorResult(fmt.Errorf("only %.0f%% visible once centered, need %d%%", visible, pct),
 			fmt.Sprintf("Element not visible enough: %s", selectorDesc(step.Element)))
 	}
 	return successResult("Element centered after scrolling", centered)
@@ -592,9 +593,11 @@ const centerTolerance = 0.1
 const maxCenterDrags = 4
 
 // centerElement drags the content until sel's center is within
-// centerTolerance of the screen center along the scroll axis. Each drag moves
-// the content by the measured offset and holds before lifting, so no fling
-// carries it past. A drag that leaves the element where it was means the
+// centerTolerance of the screen center along the scroll axis. Each drag
+// travels the measured offset divided by the container's gain -- the content's
+// travel per point of drag, 1 until the first drag measures it and re-measured
+// by every drag after -- clamped to the screen, and holds before lifting, so no
+// fling carries it past. A drag that leaves the element where it was means the
 // content is at the end of its scroll range: centering is impossible there,
 // and that is an error rather than a silent success.
 func (d *Driver) centerElement(sel flow.Selector, direction string, settle time.Duration, info *core.ElementInfo) (*core.ElementInfo, error) {
@@ -623,6 +626,7 @@ func (d *Driver) centerElement(sel flow.Selector, direction string, settle time.
 		return float64(b.X) + float64(b.Width)/2
 	}
 
+	gain := 1.0
 	info = d.stabilizeFrame(sel, info)
 	for drags := 0; ; drags++ {
 		offset := axisCenter(info.Bounds) - screenCenter
@@ -632,9 +636,11 @@ func (d *Driver) centerElement(sel flow.Selector, direction string, settle time.
 		if drags == maxCenterDrags {
 			return nil, fmt.Errorf("still %.0fpt from the screen center after %d drags", offset, drags)
 		}
-		toX, toY := cx, cy-offset
+		end := math.Max(0, math.Min(extent, screenCenter-offset/gain))
+		travel := screenCenter - end
+		toX, toY := cx, end
 		if !vertical {
-			toX, toY = cx-offset, cy
+			toX, toY = end, cy
 		}
 		if err := d.client.SwipeWithVelocity(cx, cy, toX, toY, 0, 600, 0.2); err != nil {
 			return nil, fmt.Errorf("centering drag failed: %w", err)
@@ -645,9 +651,11 @@ func (d *Driver) centerElement(sel flow.Selector, direction string, settle time.
 			return nil, fmt.Errorf("element lost after a centering drag: %v", err)
 		}
 		next = d.stabilizeFrame(sel, next)
-		if math.Abs(axisCenter(next.Bounds)-axisCenter(info.Bounds)) < 1 {
+		moved := axisCenter(info.Bounds) - axisCenter(next.Bounds)
+		if math.Abs(moved) < 1 {
 			return nil, fmt.Errorf("content stopped %.0fpt from the screen center: the element sits at the end of its scroll range and cannot be centered (require visibilityPercentage instead)", offset)
 		}
+		gain = moved / travel
 		info = next
 	}
 }

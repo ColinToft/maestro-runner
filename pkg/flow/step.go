@@ -247,18 +247,27 @@ type ScrollUntilVisibleStep struct {
 	Direction             string   `yaml:"direction"`
 	MaxScrolls            int      `yaml:"maxScrolls"` // Legacy: max scroll attempts
 	Speed                 int      `yaml:"speed"`
-	VisibilityPercentage  int      `yaml:"visibilityPercentage"`
+	VisibilityPercentage  *int     `yaml:"visibilityPercentage"` // nil: see RequiredVisibility
 	CenterElement         bool     `yaml:"centerElement"`
 	WaitToSettleTimeoutMs int      `yaml:"waitToSettleTimeoutMs"`
 	// Engine selects the scroll backend. See ScrollStep.Engine.
 	Engine string `yaml:"engine"`
 }
 
+// RequiredVisibility is the share (0-100) of the element that must be on
+// screen: visibilityPercentage, or Maestro's default of 100 when unset.
+func (s *ScrollUntilVisibleStep) RequiredVisibility() int {
+	if s.VisibilityPercentage == nil {
+		return 100
+	}
+	return *s.VisibilityPercentage
+}
+
 // RequirePlacementUnsupported fails a step that sets visibilityPercentage or
 // centerElement, for drivers that do not implement them: a flow relying on
 // either must not pass on a driver that ignores it.
 func (s *ScrollUntilVisibleStep) RequirePlacementUnsupported() error {
-	if s.VisibilityPercentage != 0 || s.CenterElement {
+	if s.VisibilityPercentage != nil || s.CenterElement {
 		return fmt.Errorf("scrollUntilVisible: visibilityPercentage and centerElement are implemented only by the iOS WDA driver")
 	}
 	return nil

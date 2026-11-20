@@ -5216,7 +5216,7 @@ func TestVisiblePercentage(t *testing.T) {
 }
 
 // The element counts as found only once visibilityPercentage of it is on
-// screen; unset, any visible part is enough.
+// screen; 0 asks for any visible part.
 func TestScrollUntilVisibleHonorsVisibilityPercentage(t *testing.T) {
 	cases := []struct {
 		pct         int
@@ -5230,7 +5230,7 @@ func TestScrollUntilVisibleHonorsVisibilityPercentage(t *testing.T) {
 	for _, c := range cases {
 		// Half below the bottom edge; one scroll (281pt) pulls it fully up.
 		sim := &scrollSim{x: 50, y: 819, w: 100, h: 50, maxOffset: 10000, efficiency: 1}
-		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: c.pct})
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: &c.pct})
 		if !result.Success {
 			t.Errorf("pct %d: expected success, got %s", c.pct, result.Message)
 		}
@@ -5248,7 +5248,8 @@ func TestScrollUntilVisibleHonorsVisibilityPercentage(t *testing.T) {
 func TestScrollUntilVisibleFailsBelowVisibilityPercentage(t *testing.T) {
 	// Stuck half below the bottom: the content is at the end of its range.
 	sim := &scrollSim{x: 50, y: 819, w: 100, h: 50, maxOffset: 0, efficiency: 1}
-	result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: 100, MaxScrolls: 3})
+	pct := 100
+	result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: &pct, MaxScrolls: 3})
 	if result.Success {
 		t.Fatal("expected failure: the element is never more than 50% visible")
 	}
@@ -5260,7 +5261,7 @@ func TestScrollUntilVisibleFailsBelowVisibilityPercentage(t *testing.T) {
 func TestScrollUntilVisibleRejectsVisibilityPercentageOutOfRange(t *testing.T) {
 	for _, pct := range []int{-1, 101} {
 		sim := &scrollSim{x: 50, y: 400, w: 100, h: 50, efficiency: 1}
-		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: pct})
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", VisibilityPercentage: &pct})
 		if result.Success {
 			t.Errorf("pct %d: expected failure", pct)
 		}
@@ -5288,7 +5289,7 @@ func TestScrollUntilVisibleCenterElement(t *testing.T) {
 		{"near the bottom edge", scrollSim{x: 50, y: 780, w: 100, h: 50}, "down", 1, 0},
 		{"near the top edge, content scrolled", scrollSim{x: 50, y: 520, w: 100, h: 50, offset: 500}, "up", 1, 0},
 		{"off screen, found by scrolling", scrollSim{x: 50, y: 1000, w: 100, h: 50}, "down", 1, 1},
-		{"lagging scroll view converges", scrollSim{x: 50, y: 780, w: 100, h: 50, efficiency: 0.5}, "down", 3, 0},
+		{"lagging scroll view converges", scrollSim{x: 50, y: 780, w: 100, h: 50, efficiency: 0.5}, "down", 2, 0},
 		{"horizontal", scrollSim{x: 300, y: 400, w: 60, h: 50, horizontal: true}, "right", 1, 0},
 	}
 	for _, c := range cases {
@@ -5383,9 +5384,74 @@ func TestScrollUntilVisibleCenterElementThenVisibilityPercentage(t *testing.T) {
 	for _, c := range cases {
 		// Centered element of height h: its center at y=422.
 		sim := &scrollSim{x: 50, y: 422 - c.h/2, w: 100, h: c.h, maxOffset: 10000, efficiency: 1}
-		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true, VisibilityPercentage: c.pct})
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true, VisibilityPercentage: &c.pct})
 		if result.Success != c.want {
 			t.Errorf("%s: success=%v, want %v (%s)", c.name, result.Success, c.want, result.Message)
+		}
+	}
+}
+
+// Centering converges whatever the container's gain (content travel per
+// point of drag): the first drag measures it and the next corrects by it.
+// Each drag stays on screen, however far a low gain asks it to go.
+func TestCenterElementConvergesWhateverTheContainerGain(t *testing.T) {
+	cases := []struct {
+		gain      float64
+		wantDrags int
+	}{
+		{0.25, 3}, // the second drag would leave the screen: clamped twice
+		{0.5, 2},
+		{1, 1},
+		{1.8, 2}, // a bottom sheet's measured gain (256pt for a 142pt drag)
+		{2, 2},   // the 1:1 drag would swing it to the mirror offset forever
+	}
+	for _, c := range cases {
+		// Element center at y=805, 383pt below the screen center.
+		sim := &scrollSim{x: 50, y: 780, w: 100, h: 50, maxOffset: 10000, efficiency: c.gain}
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down", CenterElement: true})
+		if !result.Success {
+			t.Errorf("gain %v: expected success, got %s", c.gain, result.Message)
+			continue
+		}
+		if len(sim.centeringDrags) != c.wantDrags {
+			t.Errorf("gain %v: expected %d centering drags, got %d", c.gain, c.wantDrags, len(sim.centeringDrags))
+		}
+		_, y := sim.bounds()
+		if math.Abs(y+sim.h/2-422) > 844*centerTolerance {
+			t.Errorf("gain %v: element center %.0f not within tolerance of 422", c.gain, y+sim.h/2)
+		}
+		for i, d := range sim.centeringDrags {
+			if d["toY"] < 0 || d["toY"] > 844 {
+				t.Errorf("gain %v: drag %d ends at y=%v, off the 844pt screen", c.gain, i, d["toY"])
+			}
+		}
+	}
+}
+
+// A scrollUntilVisible without visibilityPercentage requires the whole
+// element on screen (Maestro's default of 100), not any sliver of it.
+func TestBareScrollUntilVisibleRequiresWholeElement(t *testing.T) {
+	cases := []struct {
+		name        string
+		y           float64
+		wantScrolls int
+	}{
+		{"half on screen", 819, 1},
+		{"all but 1pt on screen", 795, 1},
+		{"fully on screen", 794, 0},
+	}
+	for _, c := range cases {
+		sim := &scrollSim{x: 50, y: c.y, w: 100, h: 50, maxOffset: 10000, efficiency: 1}
+		result := runScrollSim(t, sim, &flow.ScrollUntilVisibleStep{Direction: "down"})
+		if !result.Success {
+			t.Errorf("%s: expected success, got %s", c.name, result.Message)
+			continue
+		}
+		if sim.scrolls != c.wantScrolls {
+			t.Errorf("%s: expected %d scrolls, got %d", c.name, c.wantScrolls, sim.scrolls)
+		}
+		if _, y := sim.bounds(); y < 0 || y+sim.h > 844 {
+			t.Errorf("%s: element at y=%.0f..%.0f is not wholly on screen", c.name, y, y+sim.h)
 		}
 	}
 }
