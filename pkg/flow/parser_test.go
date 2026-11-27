@@ -946,6 +946,34 @@ func TestParse_SwipeWithAllFields(t *testing.T) {
 	}
 }
 
+// An absent visibilityPercentage parses as unset (Maestro's 100); an explicit
+// 0 stays 0.
+func TestParse_ScrollUntilVisibleVisibilityPercentage(t *testing.T) {
+	cases := []struct {
+		field string
+		unset bool
+		want  int
+	}{
+		{"", true, 100},
+		{"    visibilityPercentage: 0\n", false, 0},
+		{"    visibilityPercentage: 100\n", false, 100},
+	}
+	for _, c := range cases {
+		src := "- scrollUntilVisible:\n    element:\n      text: \"Row\"\n" + c.field
+		f, err := Parse([]byte(src), "test.yaml")
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", c.field, err)
+		}
+		scroll := f.Steps[0].(*ScrollUntilVisibleStep)
+		if (scroll.VisibilityPercentage == nil) != c.unset {
+			t.Errorf("%q: VisibilityPercentage=%v, want unset=%v", c.field, scroll.VisibilityPercentage, c.unset)
+		}
+		if got := scroll.RequiredVisibility(); got != c.want {
+			t.Errorf("%q: RequiredVisibility()=%d, want %d", c.field, got, c.want)
+		}
+	}
+}
+
 func TestParse_ScrollUntilVisibleWithAllFields(t *testing.T) {
 	yaml := `
 - scrollUntilVisible:
@@ -984,8 +1012,8 @@ func TestParse_ScrollUntilVisibleWithAllFields(t *testing.T) {
 	if scroll.Speed != 40 {
 		t.Errorf("Speed=%d, want 40", scroll.Speed)
 	}
-	if scroll.VisibilityPercentage != 80 {
-		t.Errorf("VisibilityPercentage=%d, want 80", scroll.VisibilityPercentage)
+	if scroll.RequiredVisibility() != 80 {
+		t.Errorf("RequiredVisibility()=%d, want 80", scroll.RequiredVisibility())
 	}
 	if !scroll.CenterElement {
 		t.Error("expected CenterElement=true")

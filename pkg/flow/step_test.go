@@ -267,13 +267,14 @@ func TestSwipeStep_Fields(t *testing.T) {
 }
 
 func TestScrollUntilVisibleStep_Fields(t *testing.T) {
+	pct := 80
 	s := ScrollUntilVisibleStep{
 		BaseStep:              BaseStep{StepType: StepScrollUntilVisible, TimeoutMs: 10000},
 		Element:               Selector{Text: "End of list"},
 		Direction:             "DOWN",
 		MaxScrolls:            20,
 		Speed:                 40,
-		VisibilityPercentage:  80,
+		VisibilityPercentage:  &pct,
 		CenterElement:         true,
 		WaitToSettleTimeoutMs: 100,
 	}
@@ -290,8 +291,8 @@ func TestScrollUntilVisibleStep_Fields(t *testing.T) {
 	if s.Speed != 40 {
 		t.Errorf("Speed=%d, want 40", s.Speed)
 	}
-	if s.VisibilityPercentage != 80 {
-		t.Errorf("VisibilityPercentage=%d, want 80", s.VisibilityPercentage)
+	if s.RequiredVisibility() != 80 {
+		t.Errorf("RequiredVisibility()=%d, want 80", s.RequiredVisibility())
 	}
 	if !s.CenterElement {
 		t.Error("expected CenterElement=true")
@@ -880,17 +881,40 @@ func TestStepTypeConstants(t *testing.T) {
 	}
 }
 
+// Unset, visibilityPercentage is Maestro's 100; set, it is taken as given,
+// 0 included.
+func TestScrollUntilVisibleRequiredVisibility(t *testing.T) {
+	zero, half, full := 0, 50, 100
+	cases := []struct {
+		pct  *int
+		want int
+	}{
+		{nil, 100},
+		{&zero, 0},
+		{&half, 50},
+		{&full, 100},
+	}
+	for _, c := range cases {
+		s := ScrollUntilVisibleStep{VisibilityPercentage: c.pct}
+		if got := s.RequiredVisibility(); got != c.want {
+			t.Errorf("VisibilityPercentage %v: RequiredVisibility()=%d, want %d", c.pct, got, c.want)
+		}
+	}
+}
+
 func TestScrollUntilVisibleRequirePlacementUnsupported(t *testing.T) {
+	zero, half, neg, full := 0, 50, -1, 100
 	cases := []struct {
 		step    ScrollUntilVisibleStep
 		wantErr bool
 	}{
 		{ScrollUntilVisibleStep{}, false},
 		{ScrollUntilVisibleStep{Direction: "down", MaxScrolls: 5, WaitToSettleTimeoutMs: 400}, false},
-		{ScrollUntilVisibleStep{VisibilityPercentage: 50}, true},
-		{ScrollUntilVisibleStep{VisibilityPercentage: -1}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: &zero}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: &half}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: &neg}, true},
 		{ScrollUntilVisibleStep{CenterElement: true}, true},
-		{ScrollUntilVisibleStep{VisibilityPercentage: 100, CenterElement: true}, true},
+		{ScrollUntilVisibleStep{VisibilityPercentage: &full, CenterElement: true}, true},
 	}
 	for _, c := range cases {
 		if err := c.step.RequirePlacementUnsupported(); (err != nil) != c.wantErr {
