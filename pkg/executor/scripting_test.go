@@ -1038,6 +1038,105 @@ func TestScriptEngine_ExpandStep_SetAirplaneModeInterpolation(t *testing.T) {
 	}
 }
 
+// An element-to-element swipe expands both ends: a drag between rows whose
+// ids carry ${output.x} must resolve `from:` and `to:` alike.
+func TestScriptEngine_ExpandStep_SwipeFromAndTo(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	se.SetVariable("FROM", "row-a")
+	se.SetVariable("TO", "row-b")
+
+	from := &flow.Selector{ID: "^${FROM}$"}
+	step := &flow.SwipeStep{
+		Selector: from,
+		From:     from,
+		To:       &flow.Selector{ID: "^${TO}$", Text: "${TO}"},
+	}
+
+	se.ExpandStep(step)
+
+	if step.Selector.ID != "^row-a$" {
+		t.Errorf("Selector.ID = %q, want %q", step.Selector.ID, "^row-a$")
+	}
+	if step.To.ID != "^row-b$" {
+		t.Errorf("To.ID = %q, want %q", step.To.ID, "^row-b$")
+	}
+	if step.To.Text != "row-b" {
+		t.Errorf("To.Text = %q, want %q", step.To.Text, "row-b")
+	}
+}
+
+// Expansion reaches the relative selectors inside a swipe's drop target.
+func TestScriptEngine_ExpandStep_SwipeToRelativeSelector(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+
+	se.SetVariable("DAY", "tomorrow")
+
+	step := &flow.SwipeStep{
+		Selector: &flow.Selector{ID: "row-a"},
+		To:       &flow.Selector{Text: "Deep work", ChildOf: &flow.Selector{ID: "day-${DAY}"}},
+	}
+
+	se.ExpandStep(step)
+
+	if step.To.ChildOf.ID != "day-tomorrow" {
+		t.Errorf("To.ChildOf.ID = %q, want %q", step.To.ChildOf.ID, "day-tomorrow")
+	}
+}
+
+// A parsed `from:`/`to:` swipe expands at both ends: the parser's fold of
+// `from:` into Selector and the expansion line up.
+func TestScriptEngine_ExpandStep_ParsedElementSwipe(t *testing.T) {
+	f, err := flow.Parse([]byte(`appId: x
+---
+- swipe:
+    from:
+      id: "${FROM_ID}"
+    to:
+      id: "${TO_ID}"
+`), "drag.yaml")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	se := NewScriptEngine()
+	defer se.Close()
+	se.SetVariable("FROM_ID", "^row-a$")
+	se.SetVariable("TO_ID", "^row-b$")
+
+	step := f.Steps[0].(*flow.SwipeStep)
+	se.ExpandStep(step)
+
+	if step.Selector.ID != "^row-a$" || step.To.ID != "^row-b$" {
+		t.Errorf("from/to = %q/%q, want %q/%q", step.Selector.ID, step.To.ID, "^row-a$", "^row-b$")
+	}
+}
+
+// Selectors that only the shared list reaches are expanded too.
+func TestScriptEngine_ExpandStep_EverySelectorInTheList(t *testing.T) {
+	se := NewScriptEngine()
+	defer se.Close()
+	se.SetVariable("X", "row-a")
+
+	upload := &flow.UploadFileStep{Selector: flow.Selector{ID: "${X}"}}
+	shot := &flow.TakeScreenshotStep{CropOn: &flow.Selector{ID: "${X}"}}
+	cond := &flow.AssertConditionStep{Condition: flow.Condition{Visible: &flow.Selector{ID: "${X}"}}}
+	for _, step := range []flow.Step{upload, shot, cond} {
+		se.ExpandStep(step)
+	}
+
+	for name, got := range map[string]string{
+		"uploadFile":      upload.Selector.ID,
+		"takeScreenshot":  shot.CropOn.ID,
+		"assertCondition": cond.Condition.Visible.ID,
+	} {
+		if got != "row-a" {
+			t.Errorf("%s ID = %q, want %q", name, got, "row-a")
+		}
+	}
+}
+
 func TestScriptEngine_ExpandStep_TapOnStep(t *testing.T) {
 	se := NewScriptEngine()
 	defer se.Close()
